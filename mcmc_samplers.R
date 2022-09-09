@@ -39,8 +39,8 @@ sample_trans_mat <- function(hidden_states, trans_mat_prior) {
     # Counts according to transition
   }
   trans_mat_post <- trans_mat_prior + transition_count # New Dirichlet weights
-  trans_mat_draw <- matrix(0, nrow = hidden_states, ncol = hidden_states)
-  for (i in c(1:num_states)) {
+  trans_mat_draw <- matrix(0, nrow = num_states, ncol = num_states)
+  for (i in seq_len(num_states)) {
     trans_mat_draw[i, ] <- gtools::rdirichlet(1, trans_mat_post[i, ])
     # draws Q from newly updated Dirichlet weights
   }
@@ -53,8 +53,9 @@ sample_emission_weights <- function(hidden_states, obs_data, emission_prior) {
   num_bins <- ncol(emission_prior)
   emission_count <- matrix(0, nrow = num_states, ncol = num_bins)
     # counts number of X in i, Y in m (to update Dir)
-  for (i in c(1:num_states)) {
-    for (j in c(1:num_bins)) {
+  for (i in seq_len(num_states)) {
+    for (j in seq_len(num_bins)) {
+
       emission_count[i, j] <- (hidden_states == i) %*% (obs_data == j)
       # adds one every time both X_t=i and Y_t=j
     }
@@ -119,15 +120,16 @@ binned_prior_sampler <- function(
   emission_dir_par = 1,
   hidden_states_init = NULL,
   sample_hidden_states = TRUE,
-  store_hidden_states = FALSE
+  store_hidden_states = FALSE,
+  update_every = 1000
   ) {
-  prior_params <- priorset(num_states, num_bins,
-    rep(trans_mat_dir_par, R), rep(emission_dir_par, M))
+  prior_params <- prior_set(num_states, num_bins,
+    rep(trans_mat_dir_par, num_states), rep(emission_dir_par, num_bins))
   trans_mat_prior <- prior_params$trans_mat_prior
-  emission_prior <- prior_params$emission_mat_prior
+  emission_prior <- prior_params$emission_prior
   num_obs <- length(obs_data)
   if (is.null(hidden_states_init)) {
-    hidden_states <- sample( c(1:num_states), size = num_obs, replace = TRUE)
+    hidden_states <- sample( seq_len(num_states), size = num_obs, replace = TRUE)
       # Initial state vector, drawn randomly if not provided
   } else {
     hidden_states <- hidden_states_init
@@ -140,7 +142,10 @@ binned_prior_sampler <- function(
     hidden_states_draws <- vector("list", num_its)
   }
 
-  for (i in c(1:num_its) ) { # Here we will store draws on Q and W
+  for (i in seq_len(num_its) ) { # Here we will store draws on Q and W
+    if (i%%update_every == 0){
+      print(paste(Sys.time(), "Iteration",i) )
+    }
     trans_mat_draws[[i]] <- sample_trans_mat(hidden_states, trans_mat_prior)
     emission_draws[[i]] <- sample_emission_weights(
         hidden_states, obs_data, emission_prior)
@@ -148,7 +153,7 @@ binned_prior_sampler <- function(
         obs_data, trans_mat_draws[[i]], emission_draws[[i]])
           # also computes log likelihood for Q[i] and W[i]
     llh_draws[[i]] <- hidden_states_and_llh$log_like
-    hidden_states <- hidden_states_and_llh$hidden_states_draw
+    hidden_states <- hidden_states_and_llh$hidden_states
     if (store_hidden_states){
       hidden_states_draws[[i]] <- hidden_states
     }else if (llh_draws[[i]] == max(unlist(llh_draws)[1:i])){
@@ -159,9 +164,8 @@ binned_prior_sampler <- function(
   }
   return(list("trans_mat_draws" = trans_mat_draws,
     "emission_weight_draws" = emission_draws,
-    "hidden_states_draws" = hidden_states_draws,
-      # output depends on store_hidden_states flag
-    "log_like_draws" = llh_draws,))
+    "hidden_states_draws" = hidden_states_draws, # output depends on store_hidden_states flag
+    "log_like_draws" = llh_draws))
 }
 
 distance <- function(x, y) {
@@ -191,13 +195,13 @@ label_swap <- function(
   if (is.null(reference_trans_mat) | is.null(reference_emission_weights) ){
       # Compute MAP index to get reference
     if (is.null(trans_mat_prior)) {
-    trans_mat_prior <- priorset(num_states, num_bins)$trans_mat_prior
+    trans_mat_prior <- prior_set(num_states, num_bins)$trans_mat_prior
     }
     if (is.null(emission_prior)) {
-      emission_prior <- priorset(num_states, num_bins)$emission_prior
+      emission_prior <- prior_set(num_states, num_bins)$emission_prior
     }
     post_density <- rep(0, num_its)
-    for (i in c(1:num_its)) { # Finds the  posterior mode aka MAP
+    for (i in seq_len(num_its)) { # Finds the  posterior mode aka MAP
       prior_density <- sum((trans_mat_prior - 1) * log(trans_mat_draws[[i]]))
       + sum((emission_prior - 1) * log(emission_weight_draws[[i]]))
         # prior density up to constant
@@ -218,6 +222,7 @@ label_swap <- function(
   # initialising empty lists for the trans mat and weight draws
   thinned_trans_mat_draws <- vector("list", num_thinned_its)
   thinned_emission_weight_draws <- vector("list", num_thinned_its)
+  thinned_log_likes <- vector("list", num_thinned_its)
 
   thin_idx <- function(idx){
       # local function to go between thinned list and original list
@@ -227,22 +232,22 @@ label_swap <- function(
   hidden_label_perms <- gtools::permutations(num_states, num_states)
     # Matrix of permutations
   num_perms <- factorial(num_states)
-  distances <- rep(0, num_perms)
-  for (i in c(1:num_thinned_its)) {
+  for (i in seq_len(num_thinned_its)) {
+    distances <- rep(0, num_perms)
     trans_mat <- trans_mat_draws[[thin_idx(i)]] # Initialise
     emission_weights <- emission_weight_draws[[thin_idx(i)]]
-    for (j in c(1:num_perms)) { # perms from gtools
-      for (k in c(1:num_states)) {
+    for (j in seq_len(num_perms)) { # perms from gtools
+      for (k in seq_len(num_states)) {
         emission_weights[k, ] <- emission_weight_draws[[
             thin_idx(i)]][hidden_label_perms[j, k], ]
               # Permute each vector of emission weights according to perm j
-        for (l in c(1:num_states)) {
+        for (l in seq_len(num_states)) {
           trans_mat[k, l] <- trans_mat_draws[[thin_idx(i)]][
               hidden_label_perms[j, k], hidden_label_perms[j, l]]
                 # Permute trans mat accoridng to perm j
         }
       } # End loop over matrix entries for particular perm
-      if (only_trans_mat){ # Computing distances
+      if (only_trans_mat_distance){ # Computing distances
         distances[j] <- distance(trans_mat, reference_trans_mat)
           # finds distance between permuted trans mat and ref
       } else {
@@ -252,13 +257,16 @@ label_swap <- function(
       }
       if (distances[j] == min(distances[1:j])){
           # smallest distance considered so far
-        thinned_trans_mat_draws[[thin_idx(i)]] <- trans_mat
-        thinned_emission_weight_draws[[thin_idx(i)]] <- emission_weights
+        thinned_trans_mat_draws[[i]] <- trans_mat
+        thinned_emission_weight_draws[[i]] <- emission_weights
+        thinned_log_likes[[i]] <- log_like_draws[[thin_idx(i)]]
           # update thinned list with current best label swapped version
       }
     } # End loop over particular perm: Next apply best perm
+  }
   return(list("thinned_trans_mat_draws" = thinned_trans_mat_draws,
-    "thinned_emission_weight_draws" = thinned_emission_weight_draws))
+    "thinned_emission_weight_draws" = thinned_emission_weight_draws,
+  "thinned_log_likes" = thinned_log_likes))
 }
 
 uniformly_bin <- function(obs_data, num_bins, link = NULL) {
@@ -268,7 +276,7 @@ uniformly_bin <- function(obs_data, num_bins, link = NULL) {
   } # if link has been specified, apply it
   binned_data <- floor(num_bins * obs_data) + 1
     # Gives bin label in ascending order
-  binned_data[binned_data == (M + 1)] <- M
+  binned_data[binned_data == (num_bins + 1)] <- num_bins
     # Resolves boundary issues from Y==1
   return(binned_data)
 }
@@ -360,18 +368,18 @@ dir_weights_sample <- function(
   hidden_states,
   prior_precision,
   num_states){
-  dir_weights <- matrix(0,nrow=SMax,ncol=R)
-  for (r in seq_len(num_states)){
+  dir_weights <- matrix(0,nrow=max_mix_comps,ncol=num_states)
+  for (hidden_state_value in seq_len(num_states)){
     prior_dir_param <- rep(prior_precision/max_mix_comps,max_mix_comps)
     value_counts <- table(
-      factor(latent_mixture_states[hidden_states=hidden_state_value],
+      factor(latent_mixture_states[hidden_states==hidden_state_value],
        levels=1:max_mix_comps)
       )
       # counts number of obs in each bin, similar to pd.DataFrame.value_counts()
       # factor creates R equivalent of pandas categorical
     conditional_dir_param <- prior_dir_param + value_counts
       # increases dirichlet weight by one per unit assignment
-    dir_weights[,r] <- gtools::rdirichlet(1,conditional_dir_param)
+    dir_weights[,hidden_state_value] <- gtools::rdirichlet(1,conditional_dir_param)
   }
   return(dir_weights)
 }
@@ -409,7 +417,7 @@ bivariate_states_sample <- function(
         i - 1, bivar_hidden_states_draw[i - 1]]
       # Proposal for drawing X_i | X_{i-1}
     bivar_hidden_states_draw[i] <- sample(
-      c(1:num_bivar_states), size = 1, prob = next_state_trans_prob)
+      seq_len(num_bivar_states), size = 1, prob = next_state_trans_prob)
   }
   hidden_state_draws <- Vectorize(mod)(bivar_hidden_states_draw,num_states)
     #gives corresponding hidden chain states
@@ -504,7 +512,7 @@ dir_proc_mix_cut_sampler <- function(
   # Sampler
   for ( outer_iter in seq_len(num_outer_iters) ){
     if (outer_iter%%update_every == 0){
-      paste(Sys.time(), "Outer iteration",outer_iter)
+      print(paste(Sys.time(), "Outer iteration",outer_iter))
     }
 
     hidden_states <- hidden_states_init # returned from previous loop
@@ -628,7 +636,7 @@ dir_proc_mix_full_sampler <- function(
   # Sampler
   for ( outer_iter in seq_len(num_outer_iters) ){
     if (outer_iter%%update_every == 0){
-      paste(Sys.time(), "Outer iteration",outer_iter)
+      print(paste(Sys.time(), "Outer iteration",outer_iter))
     }
     trans_mat <- sample_trans_mat(hidden_states,trans_mat_prior)
     for (state in seq_len(num_states) ){ #locs, scales vary state-by-state
@@ -750,7 +758,6 @@ smoothing_bayes_posterior <- function(
     smoothing_probs[[iter]] <- RHmm::forwardBackward(hmm,obs_data)$Gamma
   }
   return(smoothing_probs)
-}
 }
 
 # Sets list required to set mixtures as emissions using RHmm
