@@ -61,7 +61,18 @@ chib_partition_estimator <- function(obs,num_bins,latent_states_ls, num_mix_comp
 
 partitions_agree <- function(latent_states1,latent_states2){
   # checks if two sequences of latent states induce the same partition
-
+  states_agree <- TRUE
+  while (length(latent_states1) > 0){
+    cluster1 <- which(latent_states1 == latent_states1[1])
+    cluster2 <- which(latent_states2 == latent_states2[1])
+    if (all(cluster1==cluster2)){
+      latent_states1 <- latent_states1[-cluster1]
+      latent_states2 <- latent_states2[-cluster2]
+    }else{
+      states_agree <- FALSE
+      break
+    }
+  }
   if (states_agree){
     return(1)
   }
