@@ -1,14 +1,8 @@
 # Includes procedures to post process output from MCMC samplers
 # Processed output then saved for loading into Python environment
 
-source("D:/Users/Dan/Documents/PhD/Code/Semiparametric-HMMs/mcmc_samplers.R")
+source("hmm_mcmc.R")
   # replace when packaged
-
-posterior_mean <- function(trans_mat_draws) {
-    # Input MCMC sample list (or thinned list) to get mean of entries
-    # Should label swap output first
-  return(Reduce("+", trans_mat_draws) / length(trans_mat_draws))
-}
 
 matrix_entries <- function(matrix_list, row_idx, col_idx = 1) {
   # Converts list of matrices to vector of (row_idx,col_idx) entries

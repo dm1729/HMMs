@@ -45,18 +45,19 @@ simul_normal_mixture <- function(mix_weights,
 }
 
 simul_multinom_mixture <- function(mix_weights,
-                                   emission_mat_list, # each entry to be num_bins rows, num_states columns
+                                   emission_mat_list, # each entry to be num_states rows, num_bins columns
                                    num_samples,
                                    obs_dim = 3){
   mix_weights <- mix_weights / sum(mix_weights)
-  assertthat::assert_that(length(emission_mat_list) == 3)
-  num_bins <- nrow(emission_mat_list[[1]])
+  assertthat::assert_that(length(emission_mat_list) == obs_dim)
+  assertthat::assert_that(length(mix_weights)==nrow(emission_mat_list[[1]])) # so we have num_states rows
+  num_bins <- ncol(emission_mat_list[[1]])
   latents <- rmultinom(num_samples,1,mix_weights) # gives nrow = num_states, ncol = num_samples
   obs_data <- matrix(0,nrow = obs_dim, ncol = num_samples)
   weights <- matrix(0, nrow = obs_dim, ncol = num_bins)
   for (i in 1:num_samples){
     for (dim in 1:obs_dim){
-      weights[dim,] <- emission_mat_list[[dim]]%*%latents[,i] # vector of length num_bins
+      weights[dim,] <- t(emission_mat_list[[dim]])%*%latents[,i] # vector of length num_bins
       # finds the weights associated to given dimension, and to given latent state
       obs_data[dim,i] <- sample(1:num_bins, size = 1, prob = as.double(weights[dim,]))
     }

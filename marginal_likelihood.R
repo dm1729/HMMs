@@ -16,17 +16,22 @@ log_partition_prior <- function(latent_states, num_mix_comps, mix_weight_prior_p
   return(log_constant_factor+log_dir_prior_factor+log_state_count_factor)
 }
 
-log_partition_likelihood <- function(obs, num_bins, latent_states, num_mix_comps, bin_weight_prior_par){
+log_partition_likelihood <- function(obs, num_bins, latent_states, num_mix_comps, bin_weight_prior_par, obs_dim=3){
   # Eq (15) in Hairault et al.
   assertthat::assert_that(num_bins==length(bin_weight_prior_par))
+  assertthat::assert_that(obs_dim==nrow(obs))
+  log_like_by_dim <- rep(0, obs_dim)
   state_counts <- as.double(table(factor(latent_states, levels = seq_len(num_mix_comps))))
-  cross_freq <- table(factor(obs,levels=1:num_bins),factor(latent_states,levels=1:num_mix_comps))
-  log_like <- 0
-  for (state in seq_len(num_mix_comps)){
-    log_like <- log_like + ( sum( lgamma(cross_freq[,state]) - lgamma(bin_weight_prior_par) )
-    + lgamma(sum(bin_weight_prior_par)) - lgamma(state_counts[state]+sum(bin_weight_prior_par)) )
+  for (dim in seq_len(obs_dim)){
+    cross_freq <- table(factor(obs[dim,],levels=1:num_bins),factor(latent_states,levels=1:num_mix_comps))
+    for (state in seq_len(num_mix_comps)){
+      log_like_by_dim[dim] <- log_like_by_dim[dim] + (
+        sum( lgamma(bin_weight_prior_par + cross_freq[,state]) - lgamma(bin_weight_prior_par) )
+          + lgamma(sum(bin_weight_prior_par)) - lgamma(state_counts[state]+sum(bin_weight_prior_par)) )
       # Using Equation (15) with multinomial conjugate prior
+    }
   }
+  log_like <- sum(log_like_by_dim)
   return(log_like)
 }
 
@@ -130,11 +135,7 @@ sis_estimator <- function(obs,num_bins,iters, num_hidden_states,
       if ( sum(gamma)==0 ){
         print(paste("Error: sum of gamma is equal to zero"))
       }
-      print(paste("gamma weights are:"))
-      print(gamma/sum(gamma))
-      print("sampling latent...")
       latents[data_idx] <- sample(1:num_hidden_states,1,prob = gamma/sum(gamma))
-      print(paste("new latent sample is",latents[data_idx]))
       log_evidence_weights[iter] <- log_evidence_weights[iter] + log( sum(gamma) )
     }
     latents_ls[iter,] <- latents
@@ -149,7 +150,13 @@ gamma_coef <- function(idx, state, obs, latents, # obs is a matrix with ncol = s
                        is_mixture = TRUE){ # gamma_k in Hairault et al.
   assertthat::assert_that(idx <= (length(latents) + 1) )
   assertthat::assert_that(idx >= 2)
-  eff_obs <- as.matrix( as.matrix(obs[,1:(idx-1)])[,latents[1:(idx-1)]==state] )
+  if (is_mixture){
+    obs_upto_idx <- as.matrix(obs[,1:(idx-1)])
+    eff_obs <- as.matrix( obs_upto_idx[,latents[1:(idx-1)]==state] )
+  } else { # In the HMM case the one dimensionality of the data requires an extra transpose.
+    obs_upto_idx <- t(as.matrix(obs[,1:(idx-1)]))
+    eff_obs <- t( as.matrix( obs_upto_idx[,latents[1:(idx-1)]==state] ) )
+  }
   #print("call of gamma function")
   #print(paste("effective observations for evidence are",eff_obs))
   #print(paste("number of rows in eff_obs matrix is ",nrow(eff_obs)))
@@ -157,25 +164,28 @@ gamma_coef <- function(idx, state, obs, latents, # obs is a matrix with ncol = s
   log_evid_new <- baseline_log_evidence(cbind(eff_obs, obs[,idx] ), num_bins, bin_weight_prior_par, is_mixture)
   # gives the m(C_k union {y_i} )
   log_evid_old <- baseline_log_evidence(eff_obs, num_bins, bin_weight_prior_par, is_mixture)
-  print(log_evid_new)
-  print(log_evid_old)
+  #print(log_evid_new)
+  #print(log_evid_old)
   posterior_latent_weight <- post_latent_weight(state,latents[1:(idx-1)], num_states,
                                                 latent_prior_par, start_state = latents[(idx-1)], is_mixture)
-  print(paste("posterior latent weight for state",state,"is",posterior_latent_weight))
+  # print(paste("posterior latent weight for state",state,"is",posterior_latent_weight))
   # gives the integral of eta_k ( or Q_{z_{i-1},k} ) with respect to the posterior given (y,z)_{1:i-1}
   evid_ratio <- exp(log_evid_new - log_evid_old)
   if (evid_ratio ==0 ){
-    print(evid_new)
-    print(evid_old)
-    print(paste("Evidence ratio for the gamma_k is equal to zero, with k =",state,"data idx =",idx))
+    # print(evid_new)
+    # print(evid_old)
+    # print(paste("Evidence ratio for the gamma_k is equal to zero, with k =",state,"data idx =",idx))
   }
   return( evid_ratio*posterior_latent_weight )
 }
 
-transition_count <- function(latent_states){
+transition_count <- function(latent_states,num_states){
+  if (length(latent_states) <= 1){
+    return(matrix(0,nrow = num_states,ncol = num_states))
+  }
   sample_size <- length(latent_states)
-  start_states <- latent_states[1:(sample_size-1)]
-  end_states <- latent_states[2:sample_size]
+  start_states <- factor( latent_states[1:(sample_size-1)] , levels = 1:num_states)
+  end_states <- factor(latent_states[2:sample_size], levels = 1:num_states )
   trans_count_mat <- table(start_states,end_states)
   return(as.matrix(trans_count_mat))
 }
@@ -202,8 +212,8 @@ baseline_log_evidence <- function(obs, num_bins, bin_weight_prior_par, is_mixtur
     for (dim in seq_len(obs_dim)){
       bin_counts <- as.double(table(factor(obs[dim,], levels = 1:num_bins)))
       bin_weight_posterior_par <- bin_weight_prior_par + bin_counts
-      log_evidence <- log_evidence + sum(lgamma(bin_weight_posterior_par)) - lgamma(sum(bin_weight_posterior_par))
-                      + lgamma(sum(bin_weight_prior_par)) - sum(lgamma(bin_weight_prior_par))
+      log_evidence <- log_evidence + ( sum(lgamma(bin_weight_posterior_par)) - lgamma(sum(bin_weight_posterior_par))
+                      + lgamma(sum(bin_weight_prior_par)) - sum(lgamma(bin_weight_prior_par)) )
         # because we have independence given states, the integral over the dimensions is a product
         # and the log_evidence's add
     }
@@ -212,7 +222,7 @@ baseline_log_evidence <- function(obs, num_bins, bin_weight_prior_par, is_mixtur
     bin_weight_posterior_par <- bin_weight_prior_par + bin_counts
     # Given dirichlet parameter can compute normalising constant:
     # Normalising constant is a beta which is a ratio of gammas
-    log_evidence <- log_evidence + sum(lgamma(bin_weight_posterior_par)) - lgamma(sum(bin_weight_posterior_par))
+    log_evidence <- sum(lgamma(bin_weight_posterior_par)) - lgamma(sum(bin_weight_posterior_par))
     + lgamma(sum(bin_weight_prior_par)) - sum(lgamma(bin_weight_prior_par))
   }
 
@@ -230,9 +240,16 @@ post_latent_weight <- function(state, latents, num_states, latent_prior_par, sta
     return(latent_post_par[state]/sum(latent_post_par))
   } else {
     # need non-null start state
-    transition_counts_from_start_state <- transition_count(latent_states = latents)[start_state,]
+    transition_counts_from_start_state <- transition_count(latent_states = latents, num_states = num_states)[start_state,]
       # gives the historical counts from the relevant start state to other states
     latent_post_par <- latent_prior_par + transition_counts_from_start_state
     return(latent_post_par[state]/sum(latent_post_par))
   }
+}
+
+log_exponential_mean <- function(x){
+  y <- x - max(x)
+  n <- length(x)
+  log_exp_mean <- log(mean(exp(y))) + max(x)
+  return(log_exp_mean)
 }

@@ -7,7 +7,8 @@ prior_set <- function(
   num_states,
   num_bins,
   single_trans_row_prior = NULL,
-  single_emission_prior = NULL
+  single_emission_prior = NULL,
+  set_mix_prior = FALSE
   ) {
   # set prior
   # specify num_states many Dirichlet-num_states vectors for transition matrix
@@ -18,17 +19,23 @@ prior_set <- function(
   if (is.null(single_emission_prior)) {
     single_emission_prior <- rep(1, num_bins)
   }
-  trans_mat_prior <- t(replicate(num_states, single_trans_row_prior))
   emission_prior <- t(replicate(num_states, single_emission_prior))
-  return(list("trans_mat_prior" = trans_mat_prior,
-    "emission_prior" = emission_prior))
+  if (set_mix_prior){
+    return(list("mix_weight_prior" = single_trans_row_prior,
+                "emission_prior" = emission_prior))
+  }
+  else{
+    trans_mat_prior <- t(replicate(num_states, single_trans_row_prior))
+    return(list("trans_mat_prior" = trans_mat_prior,
+                "emission_prior" = emission_prior))
+  }
 }
 
 sample_trans_mat <- function(hidden_states, trans_mat_prior) {
   num_states <- nrow(trans_mat_prior) # recover the number of distinct states
   transition_count <- matrix(0, nrow = num_states, ncol = num_states)
   sample_size <- length(hidden_states)
-  for (i in c(1:(sample_size - 1))) {
+  for (i in 1:(sample_size - 1)) {
     transition_count[
       hidden_states[i],
       hidden_states[i + 1]
@@ -106,7 +113,7 @@ sample_hidden_states <- function(obs_data, trans_mat, emission_mat) {
       hidden_states_draw[i - 1], ] / gamma_[i - 1, hidden_states_draw[i - 1]]
       # Proposal for drawing X_i | X_{i-1}
     hidden_states_draw[i] <- sample(
-      c(1:num_states), size = 1, prob = next_state_trans_prob)
+      seq_len(num_states), size = 1, prob = next_state_trans_prob)
   }
   return(list("hidden_states" = hidden_states_draw, "log_like" = log_like))
 }
@@ -502,7 +509,7 @@ dir_proc_mix_cut_sampler <- function(
   for (state in seq_len(num_states)){
     fil_state <- (hidden_states_init==state)
     latent_mixture_states[fil_state] <- sample(
-      c(1:max_mix_comps),sum(fil_state),
+      seq_len(max_mix_comps),sum(fil_state),
       replace = TRUE,prob=dir_weights[,state])
   }
   assertthat::assert_that(all(latent_mixture_states>0))
@@ -582,7 +589,7 @@ dir_proc_mix_full_sampler <- function(
   inv_gamma_rate, # Rate parameter for inv gamma prior on scale
   num_states, # Number of states for HMM
   num_outer_iters, # Number of outer iterations (each has a minichain)
-  hidden_states_init =NULL,
+  hidden_states_init=NULL,
     # Initial hidden states (e.g. MLE from binned sampler)
   max_mix_comps=NULL,
     # Number of mixture components allowed in the DPMM
@@ -590,8 +597,8 @@ dir_proc_mix_full_sampler <- function(
     # See Ghosal/van der Vaart (2017) Chapter 5
     # If null, defaults to sqrt of sample size
     # Overall iterations will be dictated by number of trans mat draws
-  trans_mat_prior = NULL,
-  update_every = 100 # number of iterations before log updates
+  trans_mat_prior=NULL,
+  update_every=100 # number of iterations before log updates
   ){
   start_time <- Sys.time()
   sample_size <- length(obs_data)
