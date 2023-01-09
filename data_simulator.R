@@ -47,6 +47,7 @@ simul_normal_mixture <- function(mix_weights,
 simul_multinom_mixture <- function(mix_weights,
                                    emission_mat_list, # each entry to be num_states rows, num_bins columns
                                    num_samples,
+                                   latents_out = FALSE,
                                    obs_dim = 3){
   mix_weights <- mix_weights / sum(mix_weights)
   assertthat::assert_that(length(emission_mat_list) == obs_dim)
@@ -62,5 +63,9 @@ simul_multinom_mixture <- function(mix_weights,
       obs_data[dim,i] <- sample(1:num_bins, size = 1, prob = as.double(weights[dim,]))
     }
   }
-  return(obs_data)
+  if (latents_out){
+    return(list('obs'=obs_data, 'latents'=latents))
+  } else{
+    return(obs_data)
+  }
 }

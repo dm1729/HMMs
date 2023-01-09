@@ -90,7 +90,8 @@ sis_estimator <- function(obs,num_bins,iters, num_hidden_states,
                           bin_weight_prior_par = NULL, # gives a row of dir weights
                           latent_prior_par = NULL, # gives a row of dir weights, either for mix weights or trans rows
                           is_mixture = TRUE,
-                          obs_dim = NULL){
+                          obs_dim = NULL,
+                          output_latents=FALSE){
   log_evidence_weights <- rep(0,iters)
   if (is.null(bin_weight_prior_par)){
     bin_weight_prior_par <- rep(1,num_bins)
@@ -111,10 +112,12 @@ sis_estimator <- function(obs,num_bins,iters, num_hidden_states,
       # coerce into matrix for compatibility with mixture observations
     num_obs <- ncol(obs)
   }
-  latents_ls <- matrix(0, nrow = iters, ncol = num_obs)
+  if (output_latents){
+    latents_ls <- matrix(0, nrow = iters, ncol = num_obs)
+  }
   for (iter in seq_len(iters)){
     if (iter%%10 == 0){
-      print(paste("Iteration number",iter))
+      print(paste(Sys.time(),":","Iteration number",iter))
     }
     latents <- rep(0, num_obs)
     latents[1] <- sample(1:num_hidden_states,1,prob = latent_prior_par/sum(latent_prior_par))
@@ -138,9 +141,16 @@ sis_estimator <- function(obs,num_bins,iters, num_hidden_states,
       latents[data_idx] <- sample(1:num_hidden_states,1,prob = gamma/sum(gamma))
       log_evidence_weights[iter] <- log_evidence_weights[iter] + log( sum(gamma) )
     }
-    latents_ls[iter,] <- latents
+    if (output_latents){
+      latents_ls[iter,] <- latents
+    }
   }
-  return(list("evidence"=log_evidence_weights,"latents"=latents_ls))
+  if (output_latents){
+    return(list("evidence"=log_evidence_weights,"latents"=latents_ls))
+  } else {
+    return(list("evidence"=log_evidence_weights))
+  }
+
 }
 
 gamma_coef <- function(idx, state, obs, latents, # obs is a matrix with ncol = sample size
@@ -157,25 +167,13 @@ gamma_coef <- function(idx, state, obs, latents, # obs is a matrix with ncol = s
     obs_upto_idx <- t(as.matrix(obs[,1:(idx-1)]))
     eff_obs <- t( as.matrix( obs_upto_idx[,latents[1:(idx-1)]==state] ) )
   }
-  #print("call of gamma function")
-  #print(paste("effective observations for evidence are",eff_obs))
-  #print(paste("number of rows in eff_obs matrix is ",nrow(eff_obs)))
-  #print(paste("number of rows in augmented eff_obs matrix is ",nrow(cbind(eff_obs, obs[,idx] ))))
   log_evid_new <- baseline_log_evidence(cbind(eff_obs, obs[,idx] ), num_bins, bin_weight_prior_par, is_mixture)
   # gives the m(C_k union {y_i} )
   log_evid_old <- baseline_log_evidence(eff_obs, num_bins, bin_weight_prior_par, is_mixture)
-  #print(log_evid_new)
-  #print(log_evid_old)
   posterior_latent_weight <- post_latent_weight(state,latents[1:(idx-1)], num_states,
                                                 latent_prior_par, start_state = latents[(idx-1)], is_mixture)
-  # print(paste("posterior latent weight for state",state,"is",posterior_latent_weight))
   # gives the integral of eta_k ( or Q_{z_{i-1},k} ) with respect to the posterior given (y,z)_{1:i-1}
   evid_ratio <- exp(log_evid_new - log_evid_old)
-  if (evid_ratio ==0 ){
-    # print(evid_new)
-    # print(evid_old)
-    # print(paste("Evidence ratio for the gamma_k is equal to zero, with k =",state,"data idx =",idx))
-  }
   return( evid_ratio*posterior_latent_weight )
 }
 
@@ -202,7 +200,7 @@ baseline_log_evidence <- function(obs, num_bins, bin_weight_prior_par, is_mixtur
   }
   # print(paste("length of obs is ",obs))
   # The m(C_k(z)) quantity from Hairault et al. equation (15)
-  # Uses multinomial conjugacy
+  # Uses multinomial conjugacy.,m,
   # the effective sample size is the number of i such that z_i = k
   # computation of the eff samp size to be done outside this function
   if (is_mixture){
@@ -213,7 +211,8 @@ baseline_log_evidence <- function(obs, num_bins, bin_weight_prior_par, is_mixtur
       bin_counts <- as.double(table(factor(obs[dim,], levels = 1:num_bins)))
       bin_weight_posterior_par <- bin_weight_prior_par + bin_counts
       log_evidence <- log_evidence + ( sum(lgamma(bin_weight_posterior_par)) - lgamma(sum(bin_weight_posterior_par))
-                      + lgamma(sum(bin_weight_prior_par)) - sum(lgamma(bin_weight_prior_par)) )
+        + lgamma(sum(bin_weight_prior_par)) - sum(lgamma(bin_weight_prior_par))
+        )
         # because we have independence given states, the integral over the dimensions is a product
         # and the log_evidence's add
     }
@@ -252,4 +251,94 @@ log_exponential_mean <- function(x){
   n <- length(x)
   log_exp_mean <- log(mean(exp(y))) + max(x)
   return(log_exp_mean)
+}
+
+monte_carlo_evidence <- function( data_matrix, num_its, num_states, num_bins,
+                                  bin_weight_prior_par = 1, latent_prior_par = 1, base_seed=1 ){
+  num_samples <- ncol(data_matrix)
+  set.seed(base_seed)
+  seed_ls <- sample.int(num_its*10, num_its)
+  log_likelihood_ls <- vector("double", length = num_its)
+  for (iter in seq_len(num_its)){
+    if ( (iter%%floor(num_its/100))==0){
+      print(paste0(Sys.time(),':Iteration ',iter))
+    }
+    set.seed(seed_ls[iter])
+    mix_weights <- gtools::rdirichlet(1, rep(latent_prior_par,num_states) )
+    emission_mat_dim1 <- gtools::rdirichlet(num_states,rep(bin_weight_prior_par,num_bins))
+    # for each dimension, the emission distribution for each state is uniform on simplex
+    emission_mat_dim2 <- gtools::rdirichlet(num_states,rep(bin_weight_prior_par,num_bins))
+    emission_mat_dim3 <- gtools::rdirichlet(num_states,rep(bin_weight_prior_par,num_bins))
+    emission_mat_list <- list(emission_mat_dim1,emission_mat_dim2,emission_mat_dim3)
+    latents <- sample(1:num_states, size = num_samples, replace = TRUE )
+    log_likelihood_ls[iter] <- multinom_mix_log_likelihood(data_matrix, latents, mix_weights, emission_mat_list)
+  }
+  return(log_likelihood_ls)
+}
+
+multinom_mix_log_likelihood <- function(data_matrix, latents, mix_weights, emission_mat_list){
+  obs_dim <- nrow(data_matrix)
+  num_states <- length(mix_weights)
+  assertthat::assert_that(obs_dim == length(emission_mat_list) )
+  assertthat::assert_that(length(latents)==ncol(data_matrix))
+  log_like <- 0
+  for (dim in seq_len(obs_dim)){
+    for (latent_state in seq_len(num_states)){
+      bin_counts <- as.double(table(factor(data_matrix[dim,(latents==latent_state)], levels = 1:num_bins)))
+      log_like <- log_like + sum( bin_counts * log( emission_mat_list[[dim]][latent_state,] ) ) # sum is over obs bins
+    }
+  }
+  return(log_like)
+}
+
+marginal_data_draws <- function(num_its, num_states = 2, num_bins = 2, samples_per_it= 4,
+                                 bin_weight_prior_par = 1,
+                                 latent_prior_par = 1, base_seed=1){
+  # draw from prior
+  set.seed(base_seed)
+  seed_ls <- sample.int(num_its*10, num_its)
+  obs_data_ls <- vector("list",length = num_its)
+  latents_ls <- vector("list",length = num_its)
+  for (iter in seq_len(num_its)){
+    #print(iter)
+    if ( (iter%%floor(num_its/100)) == 0){
+      print(paste0(Sys.time(),':Iteration ',iter))
+    }
+    set.seed(seed = seed_ls[iter] )
+    mix_weights <- gtools::rdirichlet(1, rep(latent_prior_par,num_states) )
+    emission_mat_dim1 <- gtools::rdirichlet(num_states,rep(bin_weight_prior_par,num_bins))
+    # for each dimension, the emission distribution for each state is uniform on simplex
+    emission_mat_dim2 <- gtools::rdirichlet(num_states,rep(bin_weight_prior_par,num_bins))
+    emission_mat_dim3 <- gtools::rdirichlet(num_states,rep(bin_weight_prior_par,num_bins))
+    emission_mat_list <- list(emission_mat_dim1,emission_mat_dim2,emission_mat_dim3)
+    data <- simul_multinom_mixture(mix_weights,emission_mat_list, samples_per_it,latents_out = TRUE)
+    obs_data_ls[[iter]] <- data$obs
+    latents_ls[[iter]] <- (1:num_states)%*%data$latents
+
+  }
+  return(list('obs'=obs_data_ls, 'latents' = latents_ls))
+}
+
+encode_on_dim <- function(obs_mat_list, num_bins){ # takes three dim binned output and reduces to single dim
+  # bijection [M] x [M] x [M] -> [M^3]
+  samples_per_mat <- ncol(obs_mat_list[[1]])
+  out <- matrix(0, nrow = length(obs_mat_list), ncol = samples_per_mat)
+  for (obs_mat_idx in seq_len(length(obs_mat_list)) ){
+    obs_mat <- obs_mat_list[[obs_mat_idx]]
+    for (sample_idx in seq_len(samples_per_mat)){
+      out[obs_mat_idx , sample_idx ] <- ( ( obs_mat[1,sample_idx] - 1)
+        + (obs_mat[2,sample_idx] - 1 ) * num_bins
+        + (obs_mat[3,sample_idx] - 1 ) * num_bins^2 )
+    }
+  }
+  return(out)
+}
+
+encode_on_samples <- function(encoded_by_dim_mat, max_digit){
+  encoded_vec <- rep(0, nrow(encoded_by_dim_mat))
+  num_obs <- ncol(encoded_by_dim_mat)
+  for (obs_idx in seq_len(num_obs)){
+    encoded_vec <- encoded_vec + max_digit^(obs_idx - 1) * encoded_by_dim_mat[,obs_idx]
+  }
+  return(encoded_vec)
 }

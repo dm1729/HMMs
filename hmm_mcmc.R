@@ -5,7 +5,7 @@
 
 prior_set <- function(
   num_states,
-  num_bins,
+  num_bins = NULL,
   single_trans_row_prior = NULL,
   single_emission_prior = NULL,
   set_mix_prior = FALSE
@@ -13,13 +13,18 @@ prior_set <- function(
   # set prior
   # specify num_states many Dirichlet-num_states vectors for transition matrix
   # specify num_states many Dirichlet-num_bins vectors for emission vectors
+
   if (is.null(single_trans_row_prior)) {
     single_trans_row_prior <- rep(1, num_states)
   }
-  if (is.null(single_emission_prior)) {
-    single_emission_prior <- rep(1, num_bins)
+  if (is.null(num_bins)){
+    emission_prior <- NULL
+  } else {
+    if (is.null(single_emission_prior) ) {
+      single_emission_prior <- rep(1, num_bins)
+    }
+    emission_prior <- t(replicate(num_states, single_emission_prior))
   }
-  emission_prior <- t(replicate(num_states, single_emission_prior))
   if (set_mix_prior){
     return(list("mix_weight_prior" = single_trans_row_prior,
                 "emission_prior" = emission_prior))
@@ -181,19 +186,30 @@ distance <- function(x, y) {
 
 label_swap <- function(
   trans_mat_draws,
-  emission_weight_draws,
+  emission_weight_draws = NULL,
   log_like_draws,
+  scale_draws = NULL,
+  latent_loc_draws = NULL,
+  dir_weight_draws = NULL,
   thin_every = 10, # rate of thinning
   trans_mat_prior = NULL, # prior used to compute MAP (optional, default unif)
   emission_prior = NULL,
   reference_trans_mat = NULL, # optionally provide reference for relabelling
   reference_emission_weights = NULL, # if not provided defer to MAP
-  only_trans_mat_distance = FALSE # relabels only on dist between trans mats
+  only_trans_mat_distance = FALSE, # relabels only on dist between trans mats
+  full_bayes_output = FALSE # for use with full Bayes output, also swaps Dirichlet parameters
   ) {
-  num_states <- nrow(emission_weight_draws[[1]])
-    # Recovers number of hidden states
-  num_bins <- ncol(emission_weight_draws[[1]])
+  if (is.null(emission_weight_draws) | full_bayes_output){ # if no emission weight provided, only use trans mat distance
+    only_trans_mat_distance <- TRUE
+  }
+  num_states <- nrow(trans_mat_draws[[1]])
+    # Recovers number of hidden states8uy
+  if (only_trans_mat_distance){
+    num_bins <- NULL
+  } else {
+    num_bins <- ncol(emission_weight_draws[[1]])
     # Recoves number of bins
+  }
   num_its <- length(trans_mat_draws)
     # Total number of iterations
   num_thinned_its <- floor( num_its / thin_every )
@@ -204,19 +220,23 @@ label_swap <- function(
     if (is.null(trans_mat_prior)) {
     trans_mat_prior <- prior_set(num_states, num_bins)$trans_mat_prior
     }
-    if (is.null(emission_prior)) {
+    if (is.null(emission_prior) & !only_trans_mat_distance) {
       emission_prior <- prior_set(num_states, num_bins)$emission_prior
     }
     post_density <- rep(0, num_its)
-    for (i in seq_len(num_its)) { # Finds the  posterior mode aka MAP
-      prior_density <- sum((trans_mat_prior - 1) * log(trans_mat_draws[[i]]))
-      + sum((emission_prior - 1) * log(emission_weight_draws[[i]]))
+      for (i in seq_len(num_its)) { # Finds the  posterior mode aka MAP
+        if (only_trans_mat_distance){
+          prior_density <- sum((trans_mat_prior - 1) * log(trans_mat_draws[[i]]))
+        } else {
+          prior_density <- sum((trans_mat_prior - 1) * log(trans_mat_draws[[i]]))
+          + sum((emission_prior - 1) * log(emission_weight_draws[[i]]))
+        }
         # prior density up to constant
-      post_density[i] <- log_like_draws[[i]] + prior_density
-    }
+        post_density[i] <- log_like_draws[[i]] + prior_density
+      }
     map_index <- which(post_density == max(post_density))[1]
+    }
       # Finds argmax of posterior
-  }
 
   if (is.null(reference_trans_mat)) {
     reference_trans_mat <- trans_mat_draws[[map_index]]
@@ -228,8 +248,20 @@ label_swap <- function(
   }
   # initialising empty lists for the trans mat and weight draws
   thinned_trans_mat_draws <- vector("list", num_thinned_its)
-  thinned_emission_weight_draws <- vector("list", num_thinned_its)
+
+  if (only_trans_mat_distance){
+    thinned_emission_weight_draws <- NULL
+  } else {
+    thinned_emission_weight_draws <- vector("list", num_thinned_its)
+  }
+
   thinned_log_likes <- vector("list", num_thinned_its)
+
+  if (full_bayes_output){
+    thinned_dir_weight_draws <- vector("list", num_thinned_its)
+    thinned_latent_loc_draws <- vector("list", num_thinned_its)
+    thinned_scale_draws <- vector("list", num_thinned_its)
+  }
 
   thin_idx <- function(idx){
       # local function to go between thinned list and original list
@@ -242,12 +274,16 @@ label_swap <- function(
   for (i in seq_len(num_thinned_its)) {
     distances <- rep(0, num_perms)
     trans_mat <- trans_mat_draws[[thin_idx(i)]] # Initialise
-    emission_weights <- emission_weight_draws[[thin_idx(i)]]
+    if (!only_trans_mat_distance){
+      emission_weights <- emission_weight_draws[[thin_idx(i)]]
+    }
     for (j in seq_len(num_perms)) { # perms from gtools
       for (k in seq_len(num_states)) {
-        emission_weights[k, ] <- emission_weight_draws[[
+        if (!only_trans_mat_distance){
+          emission_weights[k, ] <- emission_weight_draws[[
             thin_idx(i)]][hidden_label_perms[j, k], ]
-              # Permute each vector of emission weights according to perm j
+          # Permute each vector of emission weights according to perm j
+        }
         for (l in seq_len(num_states)) {
           trans_mat[k, l] <- trans_mat_draws[[thin_idx(i)]][
               hidden_label_perms[j, k], hidden_label_perms[j, l]]
@@ -265,15 +301,34 @@ label_swap <- function(
       if (distances[j] == min(distances[1:j])){
           # smallest distance considered so far
         thinned_trans_mat_draws[[i]] <- trans_mat
-        thinned_emission_weight_draws[[i]] <- emission_weights
+        if (!only_trans_mat_distance){
+          thinned_emission_weight_draws[[i]] <- emission_weights
+        }
         thinned_log_likes[[i]] <- log_like_draws[[thin_idx(i)]]
           # update thinned list with current best label swapped version
+        if (full_bayes_output){
+          # permutes the DPMM parameters accoridng to the current best permutation.
+          thinned_scale_draws[[i]] <- scale_draws[[thin_idx(i)]][
+            hidden_label_perms[j, ]]
+          thinned_dir_weight_draws[[i]] <- dir_weight_draws[[thin_idx(i)]][
+            ,hidden_label_perms[j, ]]
+          thinned_latent_loc_draws[[i]] <- latent_loc_draws[[thin_idx(i)]][
+            ,hidden_label_perms[j, ]]
+        }
       }
     } # End loop over particular perm: Next apply best perm
   }
-  return(list("thinned_trans_mat_draws" = thinned_trans_mat_draws,
-    "thinned_emission_weight_draws" = thinned_emission_weight_draws,
-  "thinned_log_likes" = thinned_log_likes))
+  if (full_bayes_output){
+    return(list("thinned_trans_mat_draws" = thinned_trans_mat_draws,
+                "thinned_scale_draws" = thinned_scale_draws,
+                "thinned_dir_weight_draws" = thinned_dir_weight_draws ,
+                "thinned_latent_loc_draws" = thinned_latent_loc_draws,
+                "thinned_log_likes" = thinned_log_likes))
+  } else {
+    return(list("thinned_trans_mat_draws" = thinned_trans_mat_draws,
+      "thinned_emission_weight_draws" = thinned_emission_weight_draws,
+    "thinned_log_likes" = thinned_log_likes))
+  }
 }
 
 uniformly_bin <- function(obs_data, num_bins, link = NULL) {
@@ -502,7 +557,7 @@ dir_proc_mix_cut_sampler <- function(
   if (is.null(hidden_states_init)){
       #random initialisation of X if none specified
     hidden_states_init <- sample(
-      c(1:num_states), size = num_obs, replace = TRUE)
+      c(1:num_states), size = sample_size, replace = TRUE)
   }
   # Initialize pointers from prior
   latent_mixture_states <- rep(0,sample_size)
@@ -621,7 +676,7 @@ dir_proc_mix_full_sampler <- function(
   if (is.null(hidden_states_init)){
       #random initialisation of X if none specified
     hidden_states <- sample(
-      c(1:num_states), size = num_obs, replace = TRUE)
+      c(1:num_states), size = sample_size, replace = TRUE)
   } else {
     hidden_states <- hidden_states_init
   }
@@ -631,7 +686,7 @@ dir_proc_mix_full_sampler <- function(
   # Initialize pointers from prior
   latent_mixture_states <- rep(0,sample_size)
   for (state in seq_len(num_states)){
-    fil_state = (hidden_states_init==state)
+    fil_state <- (hidden_states==state)
     latent_mixture_states[fil_state] <- sample(
       c(1:max_mix_comps),sum(fil_state),
       replace = TRUE,prob=dir_weights[,state])
