@@ -3,6 +3,9 @@
 
 simul_normal_hmm <- function(trans_mat, normal_mean, normal_var, num_samples) {
   # Generates N samples from param Q, mu, sigma^2
+  for (row_idx in seq_len(nrow(trans_mat))){ # ensures unit row sums
+    assertthat::assert_that(sum(trans_mat[row_idx,])==1)
+  }
   leading_eigvec <- eigen(t(trans_mat))$vectors[, 1]
   stat_dist <- abs(leading_eigvec) / sum(abs(leading_eigvec)) # stationary dist
   dist_hmm <- RHmm::distributionSet(

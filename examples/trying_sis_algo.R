@@ -1,9 +1,9 @@
 # Examples
 # home_dir <- '/home/moss/Documents/HMMs/'
 home_dir <- ''
-source(paste0(home_dir,'data_simulator.R'))
-source(paste0(home_dir,'hmm_mcmc.R'))
-source(paste0(home_dir,'marginal_likelihood.R'))
+source(paste0(home_dir, '../src/data_simulator.R'))
+source(paste0(home_dir, '../src/hmm_mcmc.R'))
+source(paste0(home_dir, '../src/marginal_likelihood.R'))
 
 # Selection of number of states - multinomial emissions:
 
@@ -120,7 +120,7 @@ for (num_bins in num_bins_ls){
   bin_weight_prior_par <- NULL
   latent_prior_par <- NULL
   df <- NULL
-  hdf5_filepath <- paste0(home_dir,'marginal_likelihood_data.h5')
+  hdf5_filepath <- paste0(home_dir, '../local_data/marginal_likelihood_data.h5')
   hdf5_key <- paste0('normal_mix_ex_1_',num_samples,
                      '_samples_',num_bins,'_bins_',
                      true_mix_comps,'_comps')
@@ -178,7 +178,7 @@ for (num_bins in num_bins_ls){
   bin_weight_prior_par <- NULL
   latent_prior_par <- NULL
   df <- NULL
-  hdf5_filepath <- paste0(home_dir,'marginal_likelihood_data.h5')
+  hdf5_filepath <- paste0(home_dir, '../local_data/marginal_likelihood_data.h5')
   hdf5_key <- paste0('normal_mix_ex_2_',num_samples,
                      '_samples_',num_bins,'_bins_',
                      true_mix_comps,'_comps')
@@ -212,7 +212,7 @@ num_bins <- 8
 num_its <- 10^6
 seed_no <- 123
 
-hdf5_filepath <- paste0(home_dir, 'naive_monte_carlo_evidence.h5')
+hdf5_filepath <- paste0(home_dir, '../local_data/naive_monte_carlo_evidence.h5')
 hdf5_key <- paste0('samples')
 mc_evidence_outputs <- vector("list")
 obs_data_ls <- vector("list")
@@ -269,7 +269,7 @@ for (obs_data in obs_data_ls ){
   }
 }
 
-hdf5_filepath <- paste0(home_dir, 'sis_draws_naive_comparison.h5')
+hdf5_filepath <- paste0(home_dir, '../local_data/sis_draws_naive_comparison.h5')
 hdf5_key <- paste0('samples')
 
 rhdf5::h5write(df2, file = hdf5_filepath, name = hdf5_key, native = TRUE)
