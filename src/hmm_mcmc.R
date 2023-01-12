@@ -653,7 +653,8 @@ dir_proc_mix_full_sampler <- function(
     # If null, defaults to sqrt of sample size
     # Overall iterations will be dictated by number of trans mat draws
   trans_mat_prior=NULL,
-  update_every=100 # number of iterations before log updates
+  update_every=100, # number of iterations before log updates
+  init_pars = NULL #initialisation parameters from a previous output
   ){
   start_time <- Sys.time()
   sample_size <- length(obs_data)
@@ -699,31 +700,44 @@ dir_proc_mix_full_sampler <- function(
   for ( outer_iter in seq_len(num_outer_iters) ){
     if (outer_iter%%update_every == 0){
       print(paste(Sys.time(), "Outer iteration",outer_iter))
+      saveRDS(list( "trans_mat_draws"=trans_mat_draws,
+      "latent_loc_draws"=latent_loc_draws,
+      "dir_weight_draws"=dir_weight_draws,
+      "log_like_draws"=log_like_draws,
+      "scale_draws"=scale_draws), file = 'checkpointed_data.Rda')
     }
-    trans_mat <- sample_trans_mat(hidden_states,trans_mat_prior)
-    for (state in seq_len(num_states) ){ #locs, scales vary state-by-state
-      # Updating latent locations (theta variables in book)
-      occupied_mix_states <- unique(latent_mixture_states[hidden_states==state])
-      for (mix_state in occupied_mix_states ){
-          # go through pairs for which we have non-trivial likelihood
-          # the rest are redrawn from the prior afterwards
-        latent_locs[mix_state, state] <- latent_loc_sample(
-          mix_state,state,latent_mixture_states,hidden_states,obs_data,
-          centering_mean,centering_var,scale)
-      }
-      latent_locs[-occupied_mix_states,state] <- rnorm(
-        max_mix_comps-length(occupied_mix_states),centering_mean,sqrt(centering_var))
-        # prior draws for trivial updates
-      
-      # Updating scale based on Normal/InvGamma conjugacy
-      scale[state] <- scale_sample(state,latent_mixture_states,hidden_states,
-        obs_data,latent_locs,inv_gamma_shape,inv_gamma_rate)
-      
-    }
+    if ( (outer_iter == 1) & (is.null(init_pars)==FALSE) ){
+    	# Used to continue from previous chain 
+    	# first 'draw' of new chain = init_pars = last draw of old chain)
+       trans_mat <- init_pars$trans_mat
+       latent_locs <- init_pars$latent_locs
+       scale <- init_pars$scale
+       dir_weights <- init_pars$dir_weights
+    } else {
+    	trans_mat <- sample_trans_mat(hidden_states,trans_mat_prior)
+    	for (state in seq_len(num_states) ){ #locs, scales vary state-by-state
+      		# Updating latent locations (theta variables in book)
+      		occupied_mix_states <- unique(latent_mixture_states[hidden_states==state])
+      		for (mix_state in occupied_mix_states ){
+          	# go through pairs for which we have non-trivial likelihood
+          	# the rest are redrawn from the prior afterwards
+        		latent_locs[mix_state, state] <- latent_loc_sample(
+          		mix_state,state,latent_mixture_states,hidden_states,obs_data,
+          		centering_mean,centering_var,scale)
+      		}
+      		latent_locs[-occupied_mix_states,state] <- rnorm(
+        		max_mix_comps-length(occupied_mix_states),centering_mean,sqrt(centering_var))
+        		# prior draws for trivial updates
+        
+      		# Updating scale based on Normal/InvGamma conjugacy
+      		scale[state] <- scale_sample(state,latent_mixture_states,hidden_states,
+        		obs_data,latent_locs,inv_gamma_shape,inv_gamma_rate)
+    	}
     
-    # Update Dirichlet weights
-    dir_weights <-dir_weights_sample(max_mix_comps,latent_mixture_states,
-      hidden_states,prior_precision,num_states)
+    	# Update Dirichlet weights
+    	dir_weights <-dir_weights_sample(max_mix_comps,latent_mixture_states,
+      		hidden_states,prior_precision,num_states)
+     }
     
     # Update hidden states of chain and latent mixture states using forward/backward
     bi_states <- bivariate_states_sample(obs_data,trans_mat,dir_weights,latent_locs,scale)
