@@ -1,9 +1,9 @@
 # Examples
 # home_dir <- '/home/moss/Documents/HMMs/'
 home_dir <- ''
-source(paste0(home_dir, '../src/data_simulator.R'))
-source(paste0(home_dir, '../src/hmm_mcmc.R'))
-source(paste0(home_dir, '../src/marginal_likelihood.R'))
+source(paste0(home_dir, './src/data_simulator.R'))
+source(paste0(home_dir, './src/hmm_mcmc.R'))
+source(paste0(home_dir, './src/marginal_likelihood.R'))
 
 # Selection of number of states - multinomial emissions:
 
@@ -89,7 +89,7 @@ source(paste0(home_dir, '../src/marginal_likelihood.R'))
 
 # Example 1: Three component (iid given states), mean p/m 1
 
-num_samples <- 1000
+num_samples <- 10
 mix_weights <- c(0.6,0.4)
 true_mix_comps <- length(mix_weights)
 
@@ -106,7 +106,7 @@ real_obs_data <- simul_normal_mixture(mix_weights,
                                  var_array, # dim same as mean_array
                                  num_samples)
 
-num_bins_ls <- c(4,8,16)
+num_bins_ls <- c(8)
 transformed_data <- matrix(truncated_inv_logit(real_obs_data),
                            nrow = nrow(real_obs_data), ncol = ncol(real_obs_data) )
 
@@ -115,8 +115,8 @@ transformed_data <- matrix(truncated_inv_logit(real_obs_data),
 # Sis sampler with uniform prior
 for (num_bins in num_bins_ls){
   binned_data <- uniformly_bin(transformed_data, num_bins = num_bins)
-  num_hidden_states_ls <- c(2,3,4) # 2 is the underlying truth
-  sis_iters <- 500
+  num_hidden_states_ls <- c(4) # 2 is the underlying truth
+  sis_iters <- 11
   bin_weight_prior_par <- NULL
   latent_prior_par <- NULL
   df <- NULL
@@ -129,7 +129,7 @@ for (num_bins in num_bins_ls){
     print(paste(Sys.time(),':','Commencing SIS procedure for',num_hidden_states,'hidden states'))
     sis_output <- sis_estimator(obs=binned_data,num_bins=num_bins,iters=sis_iters, num_hidden_states,
                                 bin_weight_prior_par = bin_weight_prior_par,
-                                latent_prior_par = latent_prior_par, is_mixture = TRUE)
+                                latent_prior_par = latent_prior_par, is_mixture = TRUE, output_latents = TRUE)
     if (is.null(df)){
       df <- data.frame(sis_output$evidence)
       df_cols <- c(paste0('log_evid_',num_hidden_states,'_states'))
@@ -140,7 +140,7 @@ for (num_bins in num_bins_ls){
       colnames(df) <- df_cols
     }
   }
-  rhdf5::h5write(df, file = hdf5_filepath, name = hdf5_key, native = TRUE)
+  #rhdf5::h5write(df, file = hdf5_filepath, name = hdf5_key, native = TRUE)
 }
 
 

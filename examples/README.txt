@@ -5,6 +5,7 @@ These include compute params (i.e. sis_iters) and statistical params (i.e. fitte
 1. Easy Examples
 A. N(-1,1) , N(1,1)
 B. N(-2,1) , N(0,1) , N(2,1)
+E. N(-1,.1), N(0,.1), N(1,.1) (fewer sis iters, diagnostic example)
 
 2. Medium Examples
 A. N(-0.5,1), N(0.5,1)

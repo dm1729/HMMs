@@ -174,6 +174,8 @@ gamma_coef <- function(idx, state, obs, latents, # obs is a matrix with ncol = s
                                                 latent_prior_par, start_state = latents[(idx-1)], is_mixture)
   # gives the integral of eta_k ( or Q_{z_{i-1},k} ) with respect to the posterior given (y,z)_{1:i-1}
   evid_ratio <- exp(log_evid_new - log_evid_old)
+  print(paste0('evid_ratio for state ', state,' = ', evid_ratio))
+  print(paste0('posterior_latent_weight for state ', state,' = ', posterior_latent_weight))
   return( evid_ratio*posterior_latent_weight )
 }
 
@@ -221,8 +223,8 @@ baseline_log_evidence <- function(obs, num_bins, bin_weight_prior_par, is_mixtur
     bin_weight_posterior_par <- bin_weight_prior_par + bin_counts
     # Given dirichlet parameter can compute normalising constant:
     # Normalising constant is a beta which is a ratio of gammas
-    log_evidence <- sum(lgamma(bin_weight_posterior_par)) - lgamma(sum(bin_weight_posterior_par))
-    + lgamma(sum(bin_weight_prior_par)) - sum(lgamma(bin_weight_prior_par))
+    log_evidence <- ( sum(lgamma(bin_weight_posterior_par)) - lgamma(sum(bin_weight_posterior_par))
+    + lgamma(sum(bin_weight_prior_par)) - sum(lgamma(bin_weight_prior_par)) )
   }
 
   return(log_evidence)
