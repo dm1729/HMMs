@@ -190,12 +190,6 @@ transition_count <- function(latent_states,num_states){
   return(as.matrix(trans_count_mat))
 }
 
-# bins_by_latent_count <- function(obs, latents, num_hidden_states){
-#   # counts the number of obs in each bin for each value of latent
-#   # used in posterior update (given obs, latents) of the emission weights
-#
-# }
-
 baseline_log_evidence <- function(obs, num_bins, bin_weight_prior_par, is_mixture = TRUE){
   if (length(obs) == 0){
     return(0)
