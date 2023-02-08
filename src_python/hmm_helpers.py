@@ -33,11 +33,12 @@ def forward_backward_multinomial(obs_data, trans_mat, emission_mat, init_probs=N
     return forward, backward
 
 
+def normal_pdf_vec(obs_, means_, standard_devs_):
+    return jnp.array([jax.scipy.stats.norm.pdf(obs_, means_[i], standard_devs_[i]) for i in range(len(means_))])
+
+
 # %%
 def forward_backward_gaussian(obs_data, trans_mat, means, standard_devs, init_probs=None):
-    def normal_pdf_vec(obs_, means_, standard_devs_):
-        return jnp.array([jax.scipy.stats.norm.pdf(obs_, means_[i], standard_devs_[i]) for i in range(len(means))])
-
     # Compute forward probabilities using scan
     def forward_scan_fun(carry, obs_t):
         alpha_t = jnp.dot(carry, trans_mat) * normal_pdf_vec(obs_t, means, standard_devs)
@@ -61,7 +62,6 @@ def forward_backward_gaussian(obs_data, trans_mat, means, standard_devs, init_pr
     return forward, backward
 
 
-# Need to modify so I can get the full matrix out
 def conditional_probability(time, state, obs_data, forward_backward_kwargs,
                             is_multinomial=False, is_gaussian=False, output_forward_backward=False):
     # computes the gamma function which is prob of given hidden state at given time, given obs
@@ -72,12 +72,12 @@ def conditional_probability(time, state, obs_data, forward_backward_kwargs,
     else:
         raise (ValueError('Must set either multinomial or Gaussian flag to zero'))
     if output_forward_backward:
-        return forward[time][state] * backward[time][state] / jnp.sum(forward[time] * backward[time]), forward, backward
+        return jnp.array(forward) * jnp.array(backward) / jnp.sum(jnp.array(forward) * jnp.array(backward),
+                                                                  axis=1), forward, backward
     else:
-        return forward[time][state] * backward[time][state] / jnp.sum(forward[time] * backward[time])
+        return jnp.array(forward) * jnp.array(backward) / jnp.sum(jnp.array(forward) * jnp.array(backward), axis=1)
 
 
-# Need to modify so I can get the full three-way array output
 def conditional_transition(start_time, start_state, obs_data, forward_backward_kwargs,
                            is_multinomial=True, is_gaussian=False):
     if is_multinomial:
@@ -89,4 +89,18 @@ def conditional_transition(start_time, start_state, obs_data, forward_backward_k
     else:
         raise (ValueError('Must set either multinomial or Gaussian flag to zero'))
 
-    conditional_transition
+    trans_mat = forward_backward_kwargs['trans_mat']
+    if 'emission_mat' in forward_backward_kwargs:
+        emission_mat = forward_backward_kwargs['emission_mat']
+        conditional_transition_tensor = jnp.einsum("it,ij,jt,jt ,it -> ijt", conditional_prob[:, :-1], trans_mat,
+                                                   emission_mat[:, obs_data[1:]],
+                                                   backward[:, 1:], (1 / backward[:, :-1]))
+    elif 'means' in forward_backward_kwargs and 'standard_devs' in forward_backward_kwargs:
+        means = forward_backward_kwargs['means']
+        standard_devs = forward_backward_kwargs['standard_devs']
+        conditional_transition_tensor = jnp.einsum("it,ij,jt,jt ,it -> ijt", conditional_prob[:, :-1], trans_mat,
+                                                   normal_pdf_vec(obs_data[1:],means, standard_devs),
+                                                   backward[:, 1:], (1 / backward[:, :-1]))
+    else:
+        raise(ValueError('Must include emission distribution information in forward_backward_kwargs'))
+    return conditional_transition_tensor
