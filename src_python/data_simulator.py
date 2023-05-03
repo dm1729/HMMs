@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 from jax import random
+import jax
 
 
 def simulate_hmm(num_obs,transition_matrix, means=None, variances=None,
@@ -19,7 +20,8 @@ def simulate_hmm(num_obs,transition_matrix, means=None, variances=None,
             raise ValueError(f"Number of rows in observed_categories should be {n_states}")
     # Compute stationary distribution if no initial distribution is provided
     if initial_distribution is None:
-        leading_eigenvector = jnp.linalg.eig(transition_matrix.T)[1][:, 0]
+        with jax.default_device(jax.devices("cpu")[0]): # eig only implemented on cpu backend
+            leading_eigenvector = jnp.linalg.eig(transition_matrix.T)[1][:, 0]
         initial_distribution = jnp.abs(leading_eigenvector) / jnp.sum(jnp.abs(leading_eigenvector))
     # Set random seed
     key = random.PRNGKey(seed)
@@ -40,7 +42,7 @@ def simulate_hmm(num_obs,transition_matrix, means=None, variances=None,
             observations.append(random.normal(subkey, means[hidden_chain[i]], variances[hidden_chain[i]]))
         elif emission_probabilities is not None:
             observations.append(random.categorical(subkey, emission_probabilities[hidden_chain[i]]))
-    return hidden_chain, observations
+    return jnp.array(hidden_chain), jnp.array(observations)
 
 
 def simulate_mixture(num_obs, num_components, component_probs,
