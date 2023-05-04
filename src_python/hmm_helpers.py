@@ -9,6 +9,53 @@ import jax.numpy as jnp
 from jax import lax
 from jax import vmap
 
+def stationary_distribution_power_iteration(trans_mat, max_iter=1000, tol=1e-6):
+    """
+    Computes the stationary distribution of a transition matrix using the power iteration method.
+    Implemented to avoid using CPU backend for eigenvector computation, as not implemented for GPU.
+
+    Args:
+        trans_mat (array-like): Transition matrix of the HMM (shape: [n_states, n_states])
+        max_iter (int, optional): Maximum number of iterations for the power iteration method (default: 1000)
+        tol (float, optional): Tolerance for convergence (default: 1e-6)
+
+    Returns:
+        jax.numpy.array: Array of stationary probabilities (shape: [n_states])
+    """
+    init_state_probs = jnp.ones(trans_mat.shape[0]) / trans_mat.shape[0]
+
+    def cond_fun(val):
+        state_probs, i = val
+        return (i < max_iter) & (jnp.linalg.norm(jnp.dot(state_probs, trans_mat) - state_probs) >= tol)
+
+    def body_fun(val):
+        state_probs, i = val
+        return jnp.dot(state_probs, trans_mat), i + 1
+
+    stationary_probs = jax.lax.while_loop(cond_fun, body_fun, (init_state_probs, 0))[0]
+    return stationary_probs
+
+# def stationary_distribution_power_iteration(trans_mat, max_iter=1000, tol=1e-6):
+#     """
+#     Computes the stationary distribution of a transition matrix using the power iteration method.
+
+#     Args:
+#         trans_mat (array-like): Transition matrix of the HMM (shape: [n_states, n_states])
+#         max_iter (int, optional): Maximum number of iterations for the power iteration method (default: 1000)
+#         tol (float, optional): Tolerance for convergence (default: 1e-6)
+
+#     Returns:
+#         jax.numpy.array: Array of stationary probabilities (shape: [n_states])
+#     """
+#     state_probs = jnp.ones(trans_mat.shape[0]) / trans_mat.shape[0]
+
+#     for _ in range(max_iter):
+#         next_state_probs = jnp.dot(state_probs, trans_mat)
+#         if jnp.linalg.norm(next_state_probs - state_probs) < tol:
+#             break
+#         state_probs = next_state_probs
+#     return state_probs
+
 def compute_emission_probs_multinomial(obs_t, emission_mat):
     """
     Computes the emission probabilities for a multinomial HMM for the given observation index and emission matrix.
@@ -38,7 +85,7 @@ def compute_emission_probs_gaussian(obs_t, means, standard_devs):
     pdf_single = lambda mean, std_dev: jax.scipy.stats.norm.pdf(obs_t, mean, std_dev)
     return vmap(pdf_single)(means, standard_devs)
 
-def forward_backward(obs_data, trans_mat, emission_func, emission_kwargs, init_probs=None): # TODO: Modify to output log-likes
+def forward_backward(obs_data, trans_mat, emission_func, emission_kwargs): # TODO: Modify to output log-likes
     """
     Computes the forward and backward probabilities for a Hidden Markov Model (HMM) with the given emission function.
 
@@ -67,11 +114,12 @@ def forward_backward(obs_data, trans_mat, emission_func, emission_kwargs, init_p
         return (log_norm_sum, alpha_t), alpha_t
 
     # Compute initial probabilities if not provided
-    if init_probs is None:
-        with jax.default_device(jax.devices("cpu")[0]):  # eig only implemented on CPU backend
-            leading_eigenvector = jnp.linalg.eig(trans_mat.T)[1][:, 0]
-        init_probs = jnp.abs(leading_eigenvector) / jnp.sum(jnp.abs(leading_eigenvector))
-    
+    # if init_probs is None:
+    #     # with jax.default_device(jax.devices("cpu")[0]):  # eig only implemented on CPU backend
+    #     #     leading_eigenvector = jnp.linalg.eig(trans_mat.T)[1][:, 0]
+    #     # init_probs = jnp.abs(leading_eigenvector) / jnp.sum(jnp.abs(leading_eigenvector))
+    #     init_probs = stationary_distribution_power_iteration(trans_mat)
+    init_probs = stationary_distribution_power_iteration(trans_mat)
     # Compute initial forward probabilities (alpha at t=0) using initial probabilities and the first observation
     forward_init = init_probs * emission_func(obs_data[0], **emission_kwargs)
     alpha_sum_init = jnp.sum(forward_init)
@@ -103,8 +151,7 @@ def forward_backward(obs_data, trans_mat, emission_func, emission_kwargs, init_p
     return forward, backward, log_likelihood
 
 
-def conditional_probability(obs_data=None, trans_mat=None, emission_func=None, emission_kwargs=None,
-                            forward=None, backward=None, output_forward_backward=False):
+def conditional_probability(forward, backward):
     """
     Computes the conditional probability (gamma) of the hidden state at each time point, given the observations and HMM parameters.
     Optionally provide forward and backward probabilities instead of the observed data and transition mat / emissions.
@@ -122,21 +169,16 @@ def conditional_probability(obs_data=None, trans_mat=None, emission_func=None, e
         jax.numpy.array: A 2D array of shape [n_timesteps, n_states] containing the conditional probabilities of the hidden state at each time point, given the observations and HMM parameters.
         If output_forward_backward is True, returns a tuple containing the conditional probabilities, forward probabilities, and backward probabilities.
     """
-    if forward is None or backward is None:
-        assert obs_data is not None, "obs_data must be provided if forward and backward are not provided."
-        assert trans_mat is not None, "trans_mat must be provided if forward and backward are not provided."
-        assert emission_func is not None, "emission_func must be provided if forward and backward are not provided."
-        assert emission_kwargs is not None, "emission_kwargs must be provided if forward and backward are not provided."
-        forward, backward = forward_backward(obs_data, trans_mat,emission_func=emission_func, emission_kwargs=emission_kwargs)
+    # assert obs_data is not None, "obs_data must be provided if forward and backward are not provided."
+    # assert trans_mat is not None, "trans_mat must be provided if forward and backward are not provided."
+    # assert emission_func is not None, "emission_func must be provided if forward and backward are not provided."
+    # assert emission_kwargs is not None, "emission_kwargs must be provided if forward and backward are not provided."
     cond_prob = jnp.array(forward) * jnp.array(backward) / jnp.sum(jnp.array(forward) * jnp.array(backward), axis=1, keepdims=True)
 
-    if output_forward_backward:
-        return cond_prob, forward, backward
-    else:
-        return cond_prob
+    return cond_prob
 
 
-def joint_conditional_probabilities(obs_data, trans_mat, emission_func, emission_kwargs, cond_prob_kwargs=None):
+def joint_conditional_probabilities(obs_data, trans_mat, emission_func, emission_kwargs, forward, backward):
     """
     Computes the joint conditional probabilities (xi) for an HMM given the observations.
 
@@ -145,15 +187,11 @@ def joint_conditional_probabilities(obs_data, trans_mat, emission_func, emission
         trans_mat: A numpy array containing the transition probabilities between hidden states.
         emission_func: A function that takes the observed data as input and returns the emission probabilities for each hidden state.
         emission_kwargs: A dictionary containing keyword arguments for the emission
-        cond_prob_kwargs: A dictionary containing keyword arguments for the conditional_probability function.
-            Particularly used to pass precomputed forward and backward probabilities to the conditional_probability function.
 
     Returns:
         jax.numpy.array: A 3D array containing the joint conditional probabilities, indexed as t (time), i (time t state), j (time t+1 state)
     """
-    conditional_prob, _, backward = conditional_probability(obs_data=obs_data, trans_mat=trans_mat,
-                                                            emission_func=emission_func, emission_kwargs=emission_kwargs,
-                                                            **cond_prob_kwargs, output_forward_backward = True)
+    conditional_prob = conditional_probability(forward,backward)
     likelihood_term = emission_func(obs_data[1:], **emission_kwargs)
     joint_cond_probs = jnp.einsum("ti,ij,jt,tj ,ti -> tij", conditional_prob[:-1,:], trans_mat,
                                                likelihood_term, backward[1:,:], (1 / backward[:-1,:]))

@@ -1,37 +1,28 @@
 import jax
 import jax.numpy as jnp
-from jax import vmap
+from jax import vmap, jit
 from functools import partial
 from hmm_helpers import *
 import jax.random as random
+#TODO: update docstrings, label swapping
 
-def prior_set(num_states, num_bins=None, single_trans_row_prior=None, single_emission_prior=None, set_mix_prior=False):
+def prior_set(num_states, single_trans_row_prior, single_emission_prior):
     """
     Sets prior parameters for binned HMM sampling.
     
     Args:
     - num_states (int): number of hidden states in the HMM.
-    - num_bins (int): number of bins in the binned observation data. If None, no emission prior is set.
-    - single_trans_row_prior (array): a 1D array of size num_states specifying the prior for each row of the transition matrix. If None, the prior is set to a uniform distribution.
-    - single_emission_prior (array): a 1D array of size num_bins specifying the prior for each emission probability vector. If None, the prior is set to a uniform distribution.
-    - set_mix_prior (bool): if True, returns the mix_weight_prior instead of the trans_mat_prior.
+    - single_trans_row_prior (array): a 1D array of size num_states specifying the prior for each row of the transition matrix.
+    - single_emission_prior (array): a 1D array of size num_bins specifying the prior for each emission probability vector. 
     
     Returns:
     - dict: a dictionary containing either trans_mat_prior and emission_prior or mix_weight_prior and emission_prior.
     """
-    if single_trans_row_prior is None:
-        single_trans_row_prior = jnp.ones(num_states)
-    if num_bins is None:
-        emission_prior = None
-    else:
-        if single_emission_prior is None:
-            single_emission_prior = jnp.ones(num_bins)
-        emission_prior = jnp.transpose(jnp.tile(single_emission_prior, (num_states,1))) # num_states x num_bins
-    if set_mix_prior:
-        return {"mix_weight_prior": single_trans_row_prior, "emission_prior": emission_prior}
-    else:
-        trans_mat_prior = jnp.tile(single_trans_row_prior, (num_states, 1)) # num_states x num_states
-        return {"trans_mat_prior": trans_mat_prior, "emission_prior": emission_prior}
+    trans_mat_prior = jnp.tile(single_trans_row_prior, (num_states,1))
+    
+    emission_prior = jnp.tile(single_emission_prior, (num_states,1)) # num_states x num_bins
+
+    return {"trans_mat_prior": trans_mat_prior, "emission_prior": emission_prior}
 
 
 def sample_trans_mat(hidden_states, trans_mat_prior, key):
@@ -51,17 +42,25 @@ def sample_trans_mat(hidden_states, trans_mat_prior, key):
         A 2D array of shape `(n_states, n_states)` representing the sampled transition matrix.
     """
     num_states = trans_mat_prior.shape[0] # recover the number of distinct states
-    transition_count = jnp.zeros((num_states, num_states), dtype=jnp.int32)
-    sample_size = hidden_states.shape[0]
-    for sample_idx in range(sample_size - 1):
-        trans_mat_idx = (hidden_states[sample_idx], hidden_states[1+sample_idx])
-        transition_count = transition_count.at[trans_mat_idx].add(1)
-    # Counts according to transition
-    trans_mat_post = trans_mat_prior + transition_count # New Dirichlet weights
-    trans_mat_draw = jnp.zeros((num_states, num_states))
+
+    transition_count = jnp.array([
+    jnp.bincount(hidden_states[:-1] * num_states + hidden_states[1:],
+                 length=num_states * num_states)]).reshape(num_states, num_states)
+    
+    trans_mat_posterior = trans_mat_prior + transition_count
+    
+    # transition_count = jnp.zeros((num_states, num_states), dtype=jnp.int32)
+    # sample_size = hidden_states.shape[0]
+
+    # for sample_idx in range(sample_size - 1):
+    #     trans_mat_idx = (hidden_states[sample_idx], hidden_states[1+sample_idx])
+    #     transition_count = transition_count.at[trans_mat_idx].add(1)
+    # # Counts according to transition
+    # trans_mat_post = trans_mat_prior + transition_count # New Dirichlet weights
+    trans_mat_draw = jnp.zeros_like(trans_mat_prior, dtype=jnp.float32)
     for i in range(num_states):
         key, subkey = random.split(key)
-        trans_mat_draw = trans_mat_draw.at[i, :].set(random.dirichlet(subkey, trans_mat_post[i, :]))
+        trans_mat_draw = trans_mat_draw.at[i, :].set(random.dirichlet(subkey, trans_mat_posterior[i, :]))
     # draws Q from newly updated Dirichlet weights
     return trans_mat_draw
 
@@ -84,14 +83,16 @@ def sample_emission_weights(hidden_states, obs_data, emission_prior, key):
     """
     num_states, num_bins = emission_prior.shape
     emission_count = jnp.zeros((num_states, num_bins), dtype=jnp.int32)
-    for i in range(num_states):
-        for j in range(num_bins):
-            emission_count = emission_count.at[i, j].add(jnp.dot( (hidden_states == i) , (obs_data == j) ) )
-    emission_post = emission_prior + emission_count
-    emissions_draw = jnp.zeros((num_states, num_bins))
+    state_idx = jnp.arange(num_states)[:, None, None]
+    obs_idx = jnp.array(obs_data)[None, :]
+    matches = (state_idx == jnp.array(hidden_states)[None, :])
+    bin_matches = (jnp.arange(num_bins)[:, None] == obs_idx)
+    emission_count = jnp.sum(matches & bin_matches[None, :, :], axis=-1)
+    emission_posterior = emission_prior + emission_count
+    emissions_draw = jnp.zeros_like(emission_prior, dtype=jnp.float32)
     for i in range(num_states):
         key, subkey = random.split(key)
-        emissions_draw = emissions_draw.at[i, :].set(random.dirichlet(subkey, emission_post[i, :]))
+        emissions_draw = emissions_draw.at[i, :].set(random.dirichlet(subkey, emission_posterior[i, :]))
     return emissions_draw
 
 
@@ -120,17 +121,16 @@ def sample_hidden_states(obs_data, trans_mat, emission_mat, key=None):
     forward, backward, log_likelihood = forward_backward(obs_data=obs_data, trans_mat=trans_mat,
                                                          emission_func=binned_emission_func,
                                                          emission_kwargs=binned_emission_kwargs)
-    cond_prob_kwargs={'forward':forward, 'backward':backward}
 
     # Probability of being in each state at each time point given data
     # The length of the first dimension is t
-    cond_prob = conditional_probability(**cond_prob_kwargs)
+    cond_prob = conditional_probability(forward=forward,backward=backward)
     # Joint probability of being in state i at time t and state j at time t+1, given data
     # Consequently the length of the first dimension is t-1
     joint_cond_probs = joint_conditional_probabilities(obs_data=obs_data,trans_mat=trans_mat,
                                                        emission_func=binned_emission_func,
                                                        emission_kwargs=binned_emission_kwargs,
-                                                       cond_prob_kwargs=cond_prob_kwargs)
+                                                       forward=forward,backward=backward)
     
     num_obs = len(obs_data)
     broadcast_cond_probs = jnp.expand_dims(cond_prob[:-1,:], axis=2)
@@ -139,25 +139,26 @@ def sample_hidden_states(obs_data, trans_mat, emission_mat, key=None):
     def scan_fun(carry, t):
         key, prev_state = carry
         key, subkey = random.split(key)
-        state = random.categorical(subkey, logits=jnp.log(transition_probs[t-1,prev_state,:]))
+        probs = jax.lax.dynamic_slice(transition_probs, (t - 1, prev_state[0], 0), (1, 1, transition_probs.shape[2]))
+        state = random.categorical(subkey, logits=jnp.log(probs)).reshape(1)
+        # state = random.categorical(subkey, logits=jnp.log(transition_probs[t-1,prev_state,:]))
         return (key, state), state
     
     key, subkey = random.split(key)
-    init_state = random.categorical(subkey, logits=jnp.log(cond_prob[0,:]))
+    init_state = random.categorical(subkey, logits=jnp.log(cond_prob[0,:])).reshape(1)
     init_carry = (key, init_state)
     _, hidden_states_draw_next = jax.lax.scan(scan_fun, init_carry, jnp.arange(1, num_obs))
-    hidden_states_draw = jnp.append(jnp.array([init_state]), hidden_states_draw_next, axis=0)
+    hidden_states_draw = jnp.append(jnp.array([init_state]), hidden_states_draw_next, axis=0) . reshape(num_obs)
 
     return hidden_states_draw, log_likelihood
 
-
+@partial(jit, static_argnums=(1,2,3))
 def binned_prior_sampler(obs_data,
                          num_states,
                          num_bins,
                          num_its,
                          trans_mat_dir_par=1,
                          emission_dir_par=1,
-                         hidden_states_init=None,
                          seed=0):
     """
     This function performs a Gibbs sampler for a Hidden Markov Model (HMM) with binned observations.
@@ -182,19 +183,17 @@ def binned_prior_sampler(obs_data,
             - "hidden_states_MLE": Maximum likelihood estimate of the hidden states.
     """
     key = random.PRNGKey(seed)
-    prior_params = prior_set(num_states, num_bins, jnp.full(num_states, trans_mat_dir_par), jnp.full(num_bins, emission_dir_par))
+    prior_params = prior_set(num_states=num_states, single_trans_row_prior=jnp.full(num_states, trans_mat_dir_par),
+                             single_emission_prior=jnp.full(num_bins, emission_dir_par))
     trans_mat_prior = prior_params['trans_mat_prior']
     emission_prior = prior_params['emission_prior']
     num_obs = len(obs_data)
-    
-    if hidden_states_init is None:
-        key, subkey = random.split(key)
-        hidden_states = random.randint(subkey, (num_obs,), 0, num_states)
-    else:
-        hidden_states = hidden_states_init
+
+    key, subkey = random.split(key)
+    hidden_states_init = random.randint(subkey, (num_obs,), 0, num_states)
 
     def scan_fun(carry, _):
-        (key, hidden_states_prev, max_log_like_prev), hidden_states_MLE_prev = carry
+        key, hidden_states_prev, max_log_like_prev, hidden_states_MLE_prev = carry # Unpack the carry tuple
 
         key, subkey = random.split(key)
         trans_mat_draw = sample_trans_mat(hidden_states_prev, trans_mat_prior, subkey)
@@ -205,27 +204,28 @@ def binned_prior_sampler(obs_data,
         key, subkey = random.split(key)
         hidden_states_draw, log_like_draw = sample_hidden_states(obs_data, trans_mat_draw, emission_draw, subkey)
 
-        if log_like_draw > max_log_like_prev:
-            hidden_states_MLE = hidden_states_draw
-            max_log_like = log_like_draw
-        else:
-            hidden_states_MLE = hidden_states_MLE_prev
-            max_log_like = max_log_like_prev
-
-        return ((key, hidden_states_draw, max_log_like), hidden_states_MLE), (trans_mat_draw,emission_draw,log_like_draw)
+        hidden_states_MLE = jax.lax.cond(jax.lax.gt(log_like_draw,max_log_like_prev),
+                                        lambda _: hidden_states_draw,
+                                        lambda _: hidden_states_MLE_prev, operand=None)
+        max_log_like = jax.lax.cond(jax.lax.gt(log_like_draw, max_log_like_prev),
+                                    lambda _: log_like_draw,
+                                    lambda _: max_log_like_prev, operand=None)
+        
+        return ((key, hidden_states_draw, max_log_like, hidden_states_MLE), (trans_mat_draw, emission_draw, log_like_draw))
     
     key, subkey = random.split(key)
-    init_carry = (key, hidden_states, float('-inf'), hidden_states)
-
-    (_, hidden_states_MLE), draws = jax.lax.scan(scan_fun, init_carry, jnp.arange(num_its))
-
-    trans_mat_draws, emission_draws, log_like_draws = zip(*draws)
+    init_carry = (key, hidden_states_init, float('-inf'), hidden_states_init)
+    (final_carry, draws) = jax.lax.scan(scan_fun, init_carry, jnp.arange(num_its))
+    _, _, _, hidden_states_MLE = final_carry
+    trans_mat_draws, emission_draws, log_like_draws = draws
 
     return {
         "trans_mat_draws": jnp.stack(trans_mat_draws),
         "emission_weight_draws": jnp.stack(emission_draws),
         "log_like_draws": jnp.stack(log_like_draws),
-        "hidden_states_MLE": hidden_states_MLE
+        "hidden_states_MLE": hidden_states_MLE,
+        "emission_prior": emission_prior,
+        "trans_mat_prior" : trans_mat_prior
     }
 
 
