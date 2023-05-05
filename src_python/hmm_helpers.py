@@ -6,9 +6,10 @@
 # by Jeff A. Bilmes (bilmes@cs.berkeley.edu)
 import jax
 import jax.numpy as jnp
-from jax import lax
-from jax import vmap
+from jax import lax, vmap, jit
+from functools import partial
 
+@jit
 def stationary_distribution_power_iteration(trans_mat, max_iter=1000, tol=1e-6):
     """
     Computes the stationary distribution of a transition matrix using the power iteration method.
@@ -85,16 +86,16 @@ def compute_emission_probs_gaussian(obs_t, means, standard_devs):
     pdf_single = lambda mean, std_dev: jax.scipy.stats.norm.pdf(obs_t, mean, std_dev)
     return vmap(pdf_single)(means, standard_devs)
 
-def forward_backward(obs_data, trans_mat, emission_func, emission_kwargs): # TODO: Modify to output log-likes
+@partial(jit, static_argnums=(2,)) # emission_func is static argument, so will be compiled once and reused
+def forward_backward(obs_data, trans_mat, emission_func): # TODO: Update calls to partially evaluate emission_func to include emission_kwargs
     """
     Computes the forward and backward probabilities for a Hidden Markov Model (HMM) with the given emission function.
 
     Args:
         obs_data (array-like): Array of observed data (sequence of emission values)
         trans_mat (array-like): Transition matrix of the HMM (shape: [n_states, n_states])
-        emission_func (function): Function to compute emission probabilities given the carry and observation
-        emission_kwargs (dict): Dict of additional keyword arguments required by the emission function
-        init_probs (array-like, optional): Initial state probabilities (default: stationary distribution)
+        emission_func (function): Function to compute emission probabilities given the carry and observation.
+        Should be partially evaluated ahead of time.
 
     Returns:
         tuple: Forward and backward probabilities (each a 2D array of shape [n_timesteps, n_states])
@@ -103,7 +104,7 @@ def forward_backward(obs_data, trans_mat, emission_func, emission_kwargs): # TOD
     def forward_scan_fun(carry, obs_t):
         log_norm_sum, alpha_prev = carry
         # Compute emission probabilities using the emission function
-        emission_probs = emission_func(obs_t, **emission_kwargs)
+        emission_probs = emission_func(obs_t)
         # Calculate alpha at t using carry (alpha at t-1), transition matrix, and emission probabilities
         alpha_t = jnp.dot(alpha_prev, trans_mat) * emission_probs
         # Normalize alpha_t to avoid underflow issues
@@ -121,7 +122,7 @@ def forward_backward(obs_data, trans_mat, emission_func, emission_kwargs): # TOD
     #     init_probs = stationary_distribution_power_iteration(trans_mat)
     init_probs = stationary_distribution_power_iteration(trans_mat)
     # Compute initial forward probabilities (alpha at t=0) using initial probabilities and the first observation
-    forward_init = init_probs * emission_func(obs_data[0], **emission_kwargs)
+    forward_init = init_probs * emission_func(obs_data[0])
     alpha_sum_init = jnp.sum(forward_init)
     forward_init /= alpha_sum_init
     log_norm_sum_init = jnp.log(alpha_sum_init)
@@ -133,7 +134,7 @@ def forward_backward(obs_data, trans_mat, emission_func, emission_kwargs): # TOD
     # Compute backward probabilities using scan
     def backward_scan_fun(carry, obs_t):
         # Compute emission probabilities using the emission function
-        emission_probs = emission_func(obs_t, **emission_kwargs)
+        emission_probs = emission_func(obs_t)
         # Calculate beta at t using carry (beta at t+1), transition matrix, and emission probabilities
         beta_t = jnp.dot(trans_mat, carry * emission_probs)
         # Normalize beta_t to avoid underflow issues
@@ -150,7 +151,7 @@ def forward_backward(obs_data, trans_mat, emission_func, emission_kwargs): # TOD
 
     return forward, backward, log_likelihood
 
-
+@jit
 def conditional_probability(forward, backward):
     """
     Computes the conditional probability (gamma) of the hidden state at each time point, given the observations and HMM parameters.
@@ -177,8 +178,8 @@ def conditional_probability(forward, backward):
 
     return cond_prob
 
-
-def joint_conditional_probabilities(obs_data, trans_mat, emission_func, emission_kwargs, forward, backward):
+@partial(jit, static_argnums=(4,))
+def joint_conditional_probabilities(obs_data, trans_mat, forward, backward, emission_func):
     """
     Computes the joint conditional probabilities (xi) for an HMM given the observations.
 
@@ -186,13 +187,13 @@ def joint_conditional_probabilities(obs_data, trans_mat, emission_func, emission
         obs_data: A numpy array containing the observed data.
         trans_mat: A numpy array containing the transition probabilities between hidden states.
         emission_func: A function that takes the observed data as input and returns the emission probabilities for each hidden state.
-        emission_kwargs: A dictionary containing keyword arguments for the emission
+            Any other arguments must be partially applied to the function before passing it to this function.
 
     Returns:
         jax.numpy.array: A 3D array containing the joint conditional probabilities, indexed as t (time), i (time t state), j (time t+1 state)
     """
     conditional_prob = conditional_probability(forward,backward)
-    likelihood_term = emission_func(obs_data[1:], **emission_kwargs)
+    likelihood_term = emission_func(obs_data[1:])
     joint_cond_probs = jnp.einsum("ti,ij,jt,tj ,ti -> tij", conditional_prob[:-1,:], trans_mat,
                                                likelihood_term, backward[1:,:], (1 / backward[:-1,:]))
     joint_cond_probs/= jnp.sum(joint_cond_probs , axis = (1,2), keepdims=True)

@@ -24,7 +24,7 @@ def prior_set(num_states, single_trans_row_prior, single_emission_prior):
 
     return {"trans_mat_prior": trans_mat_prior, "emission_prior": emission_prior}
 
-
+@jit
 def sample_trans_mat(hidden_states, trans_mat_prior, key):
     """
     Samples a transition matrix from the conditional distribution given
@@ -64,6 +64,7 @@ def sample_trans_mat(hidden_states, trans_mat_prior, key):
     # draws Q from newly updated Dirichlet weights
     return trans_mat_draw
 
+@jit
 def sample_emission_weights(hidden_states, obs_data, emission_prior, key):
     """
     Samples emission weights from the conditional distribution given
@@ -95,7 +96,7 @@ def sample_emission_weights(hidden_states, obs_data, emission_prior, key):
         emissions_draw = emissions_draw.at[i, :].set(random.dirichlet(subkey, emission_posterior[i, :]))
     return emissions_draw
 
-
+@jit
 def sample_hidden_states(obs_data, trans_mat, emission_mat, key=None):
     """
     Samples a sequence of hidden states given observations, a transition matrix, and an
@@ -116,11 +117,9 @@ def sample_hidden_states(obs_data, trans_mat, emission_mat, key=None):
         hidden states.
         - A scalar representing the log-likelihood of the generated sequence of hidden states.
     """
-    binned_emission_func=compute_emission_probs_multinomial
-    binned_emission_kwargs={'emission_mat':emission_mat}
+    binned_emission_func= partial(compute_emission_probs_multinomial, emission_mat=emission_mat)
     forward, backward, log_likelihood = forward_backward(obs_data=obs_data, trans_mat=trans_mat,
-                                                         emission_func=binned_emission_func,
-                                                         emission_kwargs=binned_emission_kwargs)
+                                                         emission_func=binned_emission_func)
 
     # Probability of being in each state at each time point given data
     # The length of the first dimension is t
@@ -128,14 +127,12 @@ def sample_hidden_states(obs_data, trans_mat, emission_mat, key=None):
     # Joint probability of being in state i at time t and state j at time t+1, given data
     # Consequently the length of the first dimension is t-1
     joint_cond_probs = joint_conditional_probabilities(obs_data=obs_data,trans_mat=trans_mat,
-                                                       emission_func=binned_emission_func,
-                                                       emission_kwargs=binned_emission_kwargs,
-                                                       forward=forward,backward=backward)
-    
+                                                       forward=forward,backward=backward,
+                                                       emission_func=binned_emission_func)
     num_obs = len(obs_data)
     broadcast_cond_probs = jnp.expand_dims(cond_prob[:-1,:], axis=2)
     transition_probs = joint_cond_probs / broadcast_cond_probs
-
+    
     def scan_fun(carry, t):
         key, prev_state = carry
         key, subkey = random.split(key)
@@ -157,8 +154,8 @@ def binned_prior_sampler(obs_data,
                          num_states,
                          num_bins,
                          num_its,
-                         trans_mat_dir_par=1,
-                         emission_dir_par=1,
+                         trans_mat_dir_par=1.,
+                         emission_dir_par=1.,
                          seed=0):
     """
     This function performs a Gibbs sampler for a Hidden Markov Model (HMM) with binned observations.
