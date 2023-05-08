@@ -79,11 +79,15 @@ def gamma_coefficient(idx, state, obs, latents, num_bins, num_states, bin_weight
     return evidence_ratio * posterior_latent_weight
 
 
-@jit
 def transition_count(latent_states, num_states):
-    transition_count_mat = jnp.array([
-    jnp.bincount(latent_states[:-1] * num_states + latent_states[1:],
-                 length=num_states * num_states)]).reshape(num_states, num_states)
+    if len(latent_states) <= 1:
+        return jnp.zeros((num_states, num_states))
+    sample_size = len(latent_states)
+    start_states = latent_states[1:(sample_size-1)]
+    end_states = latent_states[2:sample_size]
+    transition_count_mat = jnp.zeros((num_states, num_states))
+    for i in range(sample_size-1):
+        transition_count_mat[start_states[i], end_states[i]] += 1
     return transition_count_mat
 
 

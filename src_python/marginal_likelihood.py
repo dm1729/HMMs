@@ -1,9 +1,8 @@
 import jax.numpy as jnp
-from jax import lax
 import jax.random as random
 import jax
 from functools import partial
-from jax import vmap, lax, random
+from jax import vmap, lax, random, jit
 import jax.numpy as jnp
 
 def sis_estimator_hmm(obs,
@@ -183,17 +182,13 @@ def post_latent_weight_mixture(state, latents, num_states, latent_prior_par):
     latent_post_par = latent_prior_par + state_counts
     return latent_post_par[state] / jnp.sum(latent_post_par)
 
-
+@jit
 def transition_count(latent_states, num_states):
-    if len(latent_states) <= 1:
-        return jnp.zeros((num_states, num_states))
-    sample_size = len(latent_states)
-    start_states = latent_states[1:(sample_size-1)]
-    end_states = latent_states[2:sample_size]
-    transition_count_mat = jnp.zeros((num_states, num_states))
-    for i in range(sample_size-1):
-        transition_count_mat[start_states[i], end_states[i]] += 1
+    transition_count_mat = jnp.array([
+    jnp.bincount(latent_states[:-1] * num_states + latent_states[1:],
+                 length=num_states * num_states)]).reshape(num_states, num_states)
     return transition_count_mat
+
 
 def log_exponential_mean(x: jnp.array):
     """
