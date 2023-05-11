@@ -1,6 +1,8 @@
-# Translation of src_R code (original) to python implementation with JAX
+# Python code for projects relating to HMMs
 
-## Overview of binned sampler (see hmm_mcmc.py, using also hmm_helpers.py)
+## Translation of src_R code (original) to python implementation with JAX
+
+### Overview of binned sampler (see hmm_mcmc.py, using also hmm_helpers.py)
 
 The R code (in src_R) using RHmm package (which uses Rcpp for forward/backward) is more efficient for small numbers of states, approx. 5x faster.
 However, a non-parallel implementation of forward/backward scales much worse with the number of states (eventually quadratic)
@@ -23,3 +25,13 @@ The point at which both perform similarly occurs at around 20 states. At this po
 * Approx 100s for 1000 iters (15s compile time, 85s execution)
 
 The JAX implementation could be especially useful when using HMMs with mixtures as emissions, as we get a larger effective state space in sampling.
+
+### Overview of hmm_helpers.py
+
+This contains helper functions for the HMM code, to replace the RHmm package in R. This includes functions for forward/backward and associated quantities, and is implemented in JAX.
+
+## Other files
+
+spectral_estimation.py: Code for estimation of number of states via tensor approximation. For comparison with marginal likelihood.
+
+marginal_likelihood.py: Implementation of SIS algo of Hairault et al. (2022) https://arxiv.org/abs/2205.05416, for the multinomial HMM, for estimation of marginal likelihood for model selection.
