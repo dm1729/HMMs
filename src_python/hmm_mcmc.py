@@ -4,6 +4,7 @@ from jax import vmap, jit
 from functools import partial
 from hmm_helpers import *
 import jax.random as random
+from itertools import permutations
 #TODO: update docstrings, label swapping
 
 def prior_set(num_states, single_trans_row_prior, single_emission_prior):
@@ -117,6 +118,7 @@ def sample_hidden_states(obs_data, trans_mat, emission_mat, key=None):
         hidden states.
         - A scalar representing the log-likelihood of the generated sequence of hidden states.
     """
+    assert len(obs_data.shape) == 1, "obs_data should be a 1D array"
     binned_emission_func= partial(compute_emission_probs_multinomial, emission_mat=emission_mat)
     forward, backward, log_likelihood = forward_backward(obs_data=obs_data, trans_mat=trans_mat,
                                                          emission_func=binned_emission_func)
@@ -272,3 +274,66 @@ def truncated_inv_logit(x , lower: float, upper: float):
     else:
         y = jnp.where((x < lower) | (x > upper), logit_part(x), linear_part(x))                                  
     return y
+
+def label_swap(samples_dict,
+               trans_mat_prior = None,
+               emission_prior = None):
+    """
+    Relabels hidden states relative to the MAP.
+    Avoids multimodality in the posterior distribution based on arbitrary label switching.
+
+    Parameters:
+    samples_dict (dict): Dictionary of samples from the posterior distribution.
+        Includes keys trans_mat_draws, emission_weight_draws, log_like_draws.
+    trans_mat_prior (jax.numpy.ndarray): Prior for the transition matrix.
+        Defaults to uniform, in which case the MAP and MLE coincide.
+    emission_prior (jax.numpy.ndarray): Prior for the emission weights.
+        Defaults to uniform, in which case the MAP and MLE coincide.
+
+    Returns:
+    dict: Dictionary of samples from the posterior distribution, and MAP values.
+    
+    """
+    trans_mat_draws = samples_dict['trans_mat_draws']
+    emission_weight_draws = samples_dict['emission_weight_draws']
+    log_like_draws = samples_dict['log_like_draws']
+
+    mle_idx = jnp.argmax(log_like_draws)
+    trans_mat_mle = trans_mat_draws[mle_idx]
+    emission_weight_mle = emission_weight_draws[mle_idx]
+
+    num_states, num_bins = emission_weight_mle.shape
+
+    # Default to uniform priors if none are specified
+    if trans_mat_prior is None:
+        trans_mat_prior = jnp.ones((num_states,num_states))
+    if emission_prior is None:
+        emission_prior = jnp.ones((num_states,num_bins))
+    
+    # Create a permutation matrix to relabel the hidden states
+
+    state_perms = jnp.array(list(permutations(range(num_states))))
+    
+    def outer_vmap_fun(trans_mat,emission_mat):
+        def inner_vmap_fun(perm):
+            trans_mat_permuted = jnp.take(jnp.take(
+                trans_mat, jnp.array(perm),axis=0), jnp.array(perm),axis=1)
+            emission_mat_permuted = jnp.take(emission_mat, jnp.array(perm),axis=0)
+            distance = (jnp.linalg.norm((trans_mat_permuted-trans_mat_mle),ord=1)
+                        + jnp.linalg.norm((emission_mat_permuted-emission_weight_mle),ord=1))
+            return distance
+        distances = vmap(inner_vmap_fun)(state_perms)
+        min_idx = jnp.argmin(distances)
+        min_perm = state_perms[min_idx]
+        trans_mat_relabelled = jnp.take(jnp.take(
+                trans_mat, jnp.array(min_perm),axis=0), jnp.array(min_perm),axis=1)
+        emission_mat_relabelled = jnp.take(emission_mat, jnp.array(min_perm),axis=0)
+        return trans_mat_relabelled, emission_mat_relabelled
+    
+    trans_mat_draws_relabeled, emission_weight_draws_relabeled = jit(vmap(
+        outer_vmap_fun))(trans_mat_draws,emission_weight_draws)
+    
+    return {'trans_mat_draws_relabeled' : trans_mat_draws_relabeled,
+            'emission_weight_draws_relabeled' : emission_weight_draws_relabeled,
+            'trans_mat_mle':trans_mat_mle,
+            'emission_weight_mle':emission_weight_mle}

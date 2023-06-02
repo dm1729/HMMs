@@ -62,13 +62,13 @@ def compute_emission_probs_multinomial(obs_t, emission_mat):
     Computes the emission probabilities for a multinomial HMM for the given observation index and emission matrix.
 
     Args:
-        obs_t (array-like): The observation indices at the current timestep
+        obs_t (array-like): The observation index at the current timestep
         emission_mat (array-like): Emission matrix of the HMM (shape: [n_states, n_emissions])
 
     Returns:
-        jax.numpy.array: Array of emission probabilities (shape: [n_states] if obs_t is int, [n_states, len(obs_t)] if obs_t is array-like)
+        jax.numpy.array: Array of emission probabilities (shape: [n_states])
     """
-    return emission_mat[:, obs_t]
+    return jax.lax.dynamic_index_in_dim(emission_mat,index=obs_t,axis=1).flatten()
 
 def compute_emission_probs_gaussian(obs_t, means, standard_devs):
     """
@@ -193,8 +193,8 @@ def joint_conditional_probabilities(obs_data, trans_mat, forward, backward, emis
         jax.numpy.array: A 3D array containing the joint conditional probabilities, indexed as t (time), i (time t state), j (time t+1 state)
     """
     conditional_prob = conditional_probability(forward,backward)
-    likelihood_term = emission_func(obs_data[1:])
-    joint_cond_probs = jnp.einsum("ti,ij,jt,tj ,ti -> tij", conditional_prob[:-1,:], trans_mat,
+    likelihood_term = vmap(emission_func)(obs_data[1:]) # num_obs-1 by num_states (changed from earlier version)
+    joint_cond_probs = jnp.einsum("ti,ij,tj,tj ,ti -> tij", conditional_prob[:-1,:], trans_mat,
                                                likelihood_term, backward[1:,:], (1 / backward[:-1,:]))
     joint_cond_probs/= jnp.sum(joint_cond_probs , axis = (1,2), keepdims=True)
     # Since backward probs are renormalised to avoid underflow, the time t transitions do not sum to one
