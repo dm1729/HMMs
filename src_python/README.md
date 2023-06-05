@@ -30,8 +30,10 @@ The JAX implementation could be especially useful when using HMMs with mixtures 
 
 When using few states, it is reccomended simply use
 
-```with jax.default_device(jax.devices("cpu")[0]):
-    sampler_out = binned_prior_sampler(...)```
+```
+with jax.default_device(jax.devices("cpu")[0]):
+    sampler_out = binned_prior_sampler(...)
+```
 
 to use the CPU backend. This is much faster than using the GPU backend for small numbers of states (approx. 100x faster than GPU for 2 states)
 
