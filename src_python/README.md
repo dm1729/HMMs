@@ -26,6 +26,30 @@ The point at which both perform similarly occurs at around 20 states. At this po
 
 The JAX implementation could be especially useful when using HMMs with mixtures as emissions, as we get a larger effective state space in sampling.
 
+### Update: Using CPU backend
+
+When using few states, it is reccomended simply use
+
+```with jax.default_device(jax.devices("cpu")[0]):
+    sampler_out = binned_prior_sampler(...)```
+
+to use the CPU backend. This is much faster than using the GPU backend for small numbers of states (approx. 100x faster than GPU for 2 states)
+
+For 2 states and 2000 samples, we had
+* Approx 3.6s for 1000 iters (3s compile time, 0.6s execution)
+
+And so actually the JAX CPU backend seems to get around a 25x speedup over the Rcpp implementation for 2 states, excluding compilation time.
+
+When using the CPU backend for 50 states, we got
+* Approx 98s for 1000 iters (84s compile time, 14s execution)
+
+The GPU backend for 50 states compiled in 42s, and the CPU backend actually failed compilation for 100 states (which the GPU did compile successfully).
+Generally CPU compilation was slow for large numbers of states and seemed a bit erratic too.
+
+
+Overall, the GPU implementation is useful for large number of states (as arises if using mixtures in emissions). The GPU implementation could potentially also be vmapped over multiple different parameter configurations, and so this will contribute to the choice of backend when using small numbers of states.
+
+
 ### Overview of hmm_helpers.py
 
 This contains helper functions for the HMM code, to replace the RHmm package in R. This includes functions for forward/backward and associated quantities, and is implemented in JAX.

@@ -156,9 +156,14 @@ def baseline_log_evidence_hmm(obs,latent_bool_arr, num_states, num_bins, bin_wei
     log_evidence : array_like
         The baseline log evidence - vector of m(C_k) as in Hairault et al. (2022)
     """
+    # Stack the observations, so that each row is a state, and each column is an observation
+    # In each column, the value is the obs if the row is the active latent, and -1 otherwise
+    # E.g. if obs = [0,1,2] and latent_bool_arr = [[1,0,1],[0,1,0]] (two states), then stacked_obs = [[0,-1,2],[-1,1,-1]]
     stacked_obs = jnp.multiply(1+obs, latent_bool_arr) - 1
+
+    # Count the number of observations in each bin for each state, then discard the "-1" values
     bin_counts_all = multi_bincount(stacked_obs, length=num_bins+1) # Includes "-1" values
-    bin_counts = lax.dynamic_slice(bin_counts_all,(0,1),(num_states,num_bins))
+    bin_counts = lax.dynamic_slice(bin_counts_all,(0,1),(num_states,num_bins)) # Discard "-1" values
 
     bin_weight_posterior_par = bin_weight_prior_par + bin_counts
     log_evidence = (jnp.sum(lax.lgamma(bin_weight_posterior_par),axis=1) - lax.lgamma(jnp.sum(bin_weight_posterior_par,axis=1))
@@ -239,6 +244,31 @@ def multi_bincount(arr,length):
         The bincount for each row of the array.
     """
     return jax.vmap(partial( jax.numpy.bincount, length=length))(jnp.int16(arr))
+
+def log_marginal_likelihood_iid(obs, num_bins, single_bin_weight_prior=1.):
+    """
+    Computes the marginal likelihood for an IID model (i.e. one state) which is available in closed form.
+
+    Parameters
+    ----------
+    obs : array_like
+        The observations.
+    num_bins : int
+        The number of bins for the observations.
+    bin_weight_prior_par : float
+        The prior parameter for the bin weights.
+    
+    Returns
+    -------
+    float
+        The marginal likelihood.
+    """
+    bin_weight_prior_par = single_bin_weight_prior * jnp.ones(num_bins,dtype=jnp.float32)
+    bin_weight_posterior_par = bin_weight_prior_par + jnp.bincount(obs, length=num_bins)
+    log_evidence = (jnp.sum(lax.lgamma(bin_weight_posterior_par)) - lax.lgamma(jnp.sum(bin_weight_posterior_par))
+                    + lax.lgamma(jnp.sum(bin_weight_prior_par)) - jnp.sum(lax.lgamma(bin_weight_prior_par))
+                    )
+    return log_evidence
 
 
 # def gamma_coefficient_mixture(idx, state, obs, latents, num_bins, num_states, bin_weight_prior_par, latent_prior_par):
