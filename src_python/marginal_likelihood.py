@@ -162,7 +162,8 @@ def baseline_log_evidence_hmm(obs,latent_bool_arr, num_states, num_bins, bin_wei
     stacked_obs = jnp.multiply(1+obs, latent_bool_arr) - 1
 
     # Count the number of observations in each bin for each state, then discard the "-1" values
-    bin_counts_all = multi_bincount(stacked_obs, length=num_bins+1) # Includes "-1" values
+    bin_counts_all = multi_bincount(1+stacked_obs, length=num_bins+1) # Includes "-1" values
+    # NOTE: Added one as faced bug using multi_bincount with -1 values
     bin_counts = lax.dynamic_slice(bin_counts_all,(0,1),(num_states,num_bins)) # Discard "-1" values
 
     bin_weight_posterior_par = bin_weight_prior_par + bin_counts
@@ -225,6 +226,198 @@ def transition_count(latent_bool_arr, num_states, num_obs):
     return transition_count_mat
 
 
+def sis_estimator_mixture(obs,
+                          iters,
+                          num_bins,
+                          num_states,
+                          single_bin_weight_prior=1.,
+                          single_latent_weight_prior=1.,
+                          seed=0):
+    """
+    Implements the Sequential Importance Sampling (SIS) estimator for the marginal likelihood
+    in a categorical three-dim mixture model
+    (Hairault et al. 2022 https://arxiv.org/abs/2205.05416)
+    
+    Parameters
+    ----------
+    obs : array_like
+        The observations from the mixture.
+        Must be of shape (num_obs,3). #TODO: Can easily update to allow for more than 3 dimensions
+    iters : int
+        The number of iterations to perform.
+    num_bins : int
+        The number of bins for the observations.
+    num_states : int
+        The number of states in the HMM.
+    single_bin_weight_prior : float, optional
+        The prior weight for each bin. Default is 1.
+    single_latent_weight_prior : float, optional
+        The prior weight for each latent state. Default is 1.
+    seed : int, optional
+        The seed for the random number generator. Default is 0.
+        
+    Returns
+    -------
+    log_evidence_weights : array_like, shape (iters,)
+        The estimated log evidence from the SIS, one for each iteration.
+    """
+    assert obs.shape[1] == 3, "obs must be of shape (num_obs,3)"
+    def scan_body(carry, obs_datum): # Used for scan across observations within sis iter
+        log_evidence_weights, partial_obs_old, key, latent_bool_arr_old, data_idx = carry
+        partial_obs_new = partial_obs_old.at[data_idx,:].set(obs_datum)
+        latent_bool_arr_ones = latent_bool_arr_old.at[:,data_idx].set(1)
+        log_gamma = log_gamma_coefficient_mixture(partial_obs_old,
+                                                  partial_obs_new,
+                                                  latent_bool_arr_old=latent_bool_arr_old,
+                                                  latent_bool_arr_new=latent_bool_arr_ones,
+                                                  num_bins=num_bins,
+                                                  num_states=num_states,
+                                                  bin_weight_prior_par=bin_weight_prior_par,
+                                                  latent_prior_par=latent_prior_par)
+        
+        key, subkey = random.split(key)
+        new_latent = random.categorical(key=subkey, logits=log_gamma)
+        latent_bool_arr_new = latent_bool_arr_old.at[new_latent,data_idx].set(1)
+        new_log_evidence_weights = log_evidence_weights + jax.scipy.special.logsumexp(log_gamma)
+        return (new_log_evidence_weights, partial_obs_new, key, latent_bool_arr_new, data_idx+1), None
+
+    bin_weight_prior_par = jnp.repeat(single_bin_weight_prior,num_bins*num_states).reshape(num_states,num_bins)
+    latent_prior_par = jnp.repeat(single_latent_weight_prior,num_states)
+    num_obs = obs.shape[0]
+
+    def single_sis_iter(key): # Single iteration over which to vmap
+        latent_bool_arr = jnp.zeros((num_states,num_obs), dtype=jnp.float16)
+        init_state = random.categorical(key, logits=jnp.log(latent_prior_par))
+        latent_bool_arr = latent_bool_arr.at[init_state,0].set(1)
+        partial_obs = -jnp.ones_like(obs, dtype=jnp.float16)
+        partial_obs = partial_obs.at[0,:].set(obs[0,:])
+        init_log_evidence_weight = baseline_log_evidence_mixture(partial_obs, latent_bool_arr, num_states, num_bins, bin_weight_prior_par)[init_state]
+        init_carry = (init_log_evidence_weight, partial_obs, key, latent_bool_arr , 1)
+        final_carry, _ = lax.scan(scan_body, init_carry, jax.lax.dynamic_slice_in_dim(obs, 1, num_obs-1, axis=0) )
+        log_evidence_weight = final_carry[0]
+        return log_evidence_weight
+
+    key = random.PRNGKey(seed)
+    keys = random.split(key, iters)
+    log_evidence_weights = vmap(single_sis_iter)(keys)
+    return log_evidence_weights
+
+def log_gamma_coefficient_mixture(partial_obs_old,
+                                  partial_obs_new,
+                                  latent_bool_arr_old,
+                                  latent_bool_arr_new,
+                                  num_bins,
+                                  num_states,
+                                  bin_weight_prior_par,
+                                  latent_prior_par):
+    """
+    Computes the log gamma coefficient for a three-dim multinomial mixture.
+    
+    Parameters
+    ----------
+    partial_obs_old : array_like
+        The old partial observations.
+    partial_obs_new : array_like
+        The new partial observations.
+    latent_bool_arr_old : array_like
+        The old boolean array of latents (the reference)
+    latent_bool_arr_new : array_like
+        The new boolean array of latents (the 'proposal')
+    num_bins : int
+        The number of bins for the observations.
+    num_states : int
+        The number of states in the mixture.
+    bin_weight_prior_par : float
+        The prior parameter for the bin weights.
+    latent_prior_par : float
+        The prior parameter for the latent weights.
+        
+    Returns
+    -------
+    log_gamma : array_like
+        The log gamma coefficient.
+    """
+    log_evidence_old = baseline_log_evidence_mixture(partial_obs_old, latent_bool_arr_old, num_states,num_bins, bin_weight_prior_par)
+    log_evidence_new = baseline_log_evidence_mixture(partial_obs_new, latent_bool_arr_new, num_states,num_bins, bin_weight_prior_par)
+    log_posterior_latent_weight = jnp.log(
+        post_latent_weight_mixture(latent_bool_arr_old, latent_prior_par)
+        )
+    log_evidence_ratio = log_evidence_new - log_evidence_old # Ratio of m(C_k)) quantities in Hairault et al.
+    # Vector of length num_states, with log_gamma_k for each state
+
+    return log_evidence_ratio + log_posterior_latent_weight # log gamma_k in Hairault et al.
+
+
+@partial(jit, static_argnums=(2,3))
+def baseline_log_evidence_mixture(obs,
+                                  latent_bool_arr,
+                                  num_states,
+                                  num_bins,
+                                  bin_weight_prior_par):
+    """
+    Calculate the "baseline log evidence" for a mixture.
+    
+    Parameters
+    ----------
+    obs : array_like
+        The observations.
+    latent_bool_arr : array_like
+        Boolean array indicating the latent state for each observation.
+    num_states : int
+        The number of states in the mixture.
+    num_bins : int
+        The number of bins for the observations.
+    bin_weight_prior_par : float
+        The prior parameter for the bin weights.
+        
+    Returns
+    -------
+    log_evidence : array_like
+        The baseline log evidence - vector of m(C_k) as in Hairault et al. (2022)
+    """
+    def process_dim(dim_obs): # dim_obs is a single column of obs
+        stacked_obs = jnp.multiply(1+dim_obs, latent_bool_arr) - 1
+
+        # Count the number of observations in each bin for each state, then discard the "-1" values
+        bin_counts_all = multi_bincount(stacked_obs+1, length=num_bins+1) # Includes "-1" values
+        # NOTE: Added one as faced bug using multi_bincount with -1 values
+        bin_counts = lax.dynamic_slice(bin_counts_all,(0,1),(num_states,num_bins)) # Discard "-1" values
+
+        bin_weight_posterior_par = bin_weight_prior_par + bin_counts
+        log_evidence_dim = (jnp.sum(lax.lgamma(bin_weight_posterior_par),axis=1) - lax.lgamma(jnp.sum(bin_weight_posterior_par,axis=1))
+                        + lax.lgamma(jnp.sum(bin_weight_prior_par,axis=1)) - jnp.sum(lax.lgamma(bin_weight_prior_par),axis=1)
+                        )
+        return log_evidence_dim
+    
+    log_evidence = jnp.sum(vmap(process_dim,in_axes=1)(obs),axis=0)
+
+    return log_evidence
+
+
+@jit
+def post_latent_weight_mixture(latent_bool_arr,
+                               latent_prior_par):
+    """
+    Calculate the posterior latent weight for an HMM.
+    Uses Dirichlet conjugacy to update parameter based on observed transitions.
+    
+    Parameters
+    ----------
+    latent_bool_arr : array_like
+        Boolean array indicating the latent state for each observation.
+    latent_prior_par : float
+        The prior parameter for the latent weights.
+        
+    Returns
+    -------
+    float
+        The posterior latent weight.
+    """ 
+    state_counts = jnp.sum(latent_bool_arr, axis=1) # Sums the booleans for each row
+    latent_post_par = latent_prior_par + state_counts
+    return latent_post_par / jnp.sum(latent_post_par)
+
+
 @partial(jax.jit, static_argnums=(1,))
 def multi_bincount(arr,length):
     """
@@ -270,64 +463,6 @@ def log_marginal_likelihood_iid(obs, num_bins, single_bin_weight_prior=1.):
                     )
     return log_evidence
 
-
-# def gamma_coefficient_mixture(idx, state, obs, latents, num_bins, num_states, bin_weight_prior_par, latent_prior_par):
-#     assert idx <= (len(latents) + 1)
-#     assert idx >= 2
-
-#     obs_up_to_idx = jnp.asarray(obs[:, :idx - 1])
-#     eff_obs = jnp.asarray(obs_up_to_idx[:, latents[:idx - 1] == state])
-
-#     log_evidence_new = baseline_log_evidence_mixture(jnp.column_stack([eff_obs, obs[:, idx]]), num_bins, bin_weight_prior_par)
-#     log_evidence_old = baseline_log_evidence_mixture(eff_obs, num_bins, bin_weight_prior_par)
-#     posterior_latent_weight = post_latent_weight_mixture(state, latents[:idx-1], num_states, latent_prior_par)
-#     evidence_ratio = jnp.exp(log_evidence_new - log_evidence_old)
-
-#     return evidence_ratio * posterior_latent_weight
-
-# def baseline_log_evidence_mixture(obs, num_bins, bin_weight_prior_par):
-#     """
-#     Calculate the "baseline log evidence" for a mixture model.
-#     For given observations, calculates the joint likelihood of these given a shared latent state.
-#     Amounts to taking the log ratio of posterior and prior normalising constants.
-
-#     Args:
-#         obs (jnp.ndarray): Observations.
-#         num_bins (int): Number of bins.
-#         bin_weight_prior_par (float): Bin weight prior parameter.
-
-#     Returns:
-#         float: Log evidence.
-#     """
-#     if obs.shape[0] == 0:
-#         return 0
-
-#     obs_dim = obs.shape[0]
-#     log_evidence = 0
-#     for dim in range(obs_dim):
-#         bin_counts = jnp.bincount(obs[dim, :], length=num_bins)
-#         bin_weight_posterior_par = bin_weight_prior_par + bin_counts
-#         log_evidence += (jnp.sum(lax.lgamma(bin_weight_posterior_par)) - lax.lgamma(jnp.sum(bin_weight_posterior_par))
-#                          + lax.lgamma(jnp.sum(bin_weight_prior_par)) - jnp.sum(lax.lgamma(bin_weight_prior_par))
-#                          )
-#     return log_evidence
-
-# def post_latent_weight_mixture(state, latents, num_states, latent_prior_par):
-#     """
-#     Calculate the posterior latent weight for a mixture model.
-
-#     Args:
-#         state (int): State index.
-#         latents (jnp.ndarray): Latent states.
-#         num_states (int): Number of states.
-#         latent_prior_par (float): Latent prior parameter.
-
-#     Returns:
-#         float: Posterior latent weight.
-#     """
-#     state_counts = jnp.bincount(latents, length=num_states)
-#     latent_post_par = latent_prior_par + state_counts
-#     return latent_post_par[state] / jnp.sum(latent_post_par)
 
 def log_exponential_mean(x: jnp.array):
     """
