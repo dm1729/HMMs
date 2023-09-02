@@ -14,7 +14,7 @@ def sis_estimator_hmm(obs,
                       seed=0):
     """
     Implements the Sequential Importance Sampling (SIS) estimator for the marginal likelihood
-    in a discrete HIdden Markov Model (HMM)
+    in a discrete Hidden Markov Model (HMM)
     (Hairault et al. 2022 https://arxiv.org/abs/2205.05416)
     
     Parameters
@@ -438,7 +438,9 @@ def multi_bincount(arr,length):
     """
     return jax.vmap(partial( jax.numpy.bincount, length=length))(jnp.int16(arr))
 
-def log_marginal_likelihood_iid(obs, num_bins, single_bin_weight_prior=1.):
+def log_marginal_likelihood_iid(obs,
+                                num_bins,
+                                single_bin_weight_prior=1.):
     """
     Computes the marginal likelihood for an IID model (i.e. one state) which is available in closed form.
 
@@ -456,11 +458,22 @@ def log_marginal_likelihood_iid(obs, num_bins, single_bin_weight_prior=1.):
     float
         The marginal likelihood.
     """
+
     bin_weight_prior_par = single_bin_weight_prior * jnp.ones(num_bins,dtype=jnp.float32)
-    bin_weight_posterior_par = bin_weight_prior_par + jnp.bincount(obs, length=num_bins)
-    log_evidence = (jnp.sum(lax.lgamma(bin_weight_posterior_par)) - lax.lgamma(jnp.sum(bin_weight_posterior_par))
-                    + lax.lgamma(jnp.sum(bin_weight_prior_par)) - jnp.sum(lax.lgamma(bin_weight_prior_par))
-                    )
+
+    if len(obs.shape) == 2:
+        obs_dim = obs.shape[1]
+        log_evidence = 0
+        for dim in range(obs_dim): # Dimensions are independent with possibly differing Dirichlet parameters.
+            bin_weight_posterior_par = bin_weight_prior_par + jnp.bincount(obs[:,dim], length=num_bins)
+            log_evidence += (jnp.sum(lax.lgamma(bin_weight_posterior_par)) - lax.lgamma(jnp.sum(bin_weight_posterior_par))
+                            + lax.lgamma(jnp.sum(bin_weight_prior_par)) - jnp.sum(lax.lgamma(bin_weight_prior_par))
+                            )
+    elif len(obs.shape) == 1:
+        bin_weight_posterior_par = bin_weight_prior_par + jnp.bincount(obs, length=num_bins)
+        log_evidence = (jnp.sum(lax.lgamma(bin_weight_posterior_par)) - lax.lgamma(jnp.sum(bin_weight_posterior_par))
+                        + lax.lgamma(jnp.sum(bin_weight_prior_par)) - jnp.sum(lax.lgamma(bin_weight_prior_par))
+                        )
     return log_evidence
 
 
